@@ -1,3 +1,4 @@
+FROM us-docker.pkg.dev/natoma-ops/nms-images/mcp-bridge-streaming-dd:latest AS bridge
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -26,20 +27,16 @@ RUN mkdir -p /app/store_creds \
 
 USER app
 
-# Expose port (use default of 8000 if PORT not set)
-EXPOSE 8000
-# Expose additional port if PORT environment variable is set to a different value
-ARG PORT
-EXPOSE ${PORT:-8000}
+# Copy MCP bridge binaries
+COPY --from=bridge /local/bin/mcp-bridge /local/bin/mcp-bridge
+RUN chmod +x /local/bin/mcp-bridge || true
+COPY --from=bridge /local/bin/datadog-init /local/bin/datadog-init
+RUN chmod +x /local/bin/datadog-init || true
+COPY --from=bridge /local/bin/run_bridge.sh /local/bin/run_bridge.sh
+RUN chmod +x /local/bin/run_bridge.sh || true
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD sh -c 'curl -f http://localhost:${PORT:-8000}/health || exit 1'
+# Ensure Smithery config is available
+COPY smithery.yaml ./
 
-# Set environment variables for Python startup args
-ENV TOOL_TIER=""
-ENV TOOLS=""
-
-# Use entrypoint for the base command and CMD for args
-ENTRYPOINT ["/bin/sh", "-c"]
-CMD ["uv run main.py --transport streamable-http ${TOOL_TIER:+--tool-tier \"$TOOL_TIER\"} ${TOOLS:+--tools $TOOLS}"]
+EXPOSE 9090
+ENTRYPOINT ["/local/bin/run_bridge.sh"]

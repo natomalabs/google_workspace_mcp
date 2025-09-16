@@ -60,6 +60,20 @@ def _get_auth_context(
         auth_method = ctx.get_state("authenticated_via")
         mcp_session_id = ctx.session_id if hasattr(ctx, "session_id") else None
 
+        # If no authenticated user found, check for environment tokens
+        if not authenticated_user:
+            import os
+            env_user_email = os.getenv("USER_GOOGLE_EMAIL")
+            env_access_token = os.getenv("GOOGLE_ACCESS_TOKEN")
+
+            if env_user_email and env_access_token:
+                # Set the authenticated user context from environment tokens
+                ctx.set_state("authenticated_user_email", env_user_email)
+                ctx.set_state("authenticated_via", "environment_tokens")
+                authenticated_user = env_user_email
+                auth_method = "environment_tokens"
+                logger.debug(f"[{tool_name}] Set authenticated user from environment tokens: {env_user_email}")
+
         if mcp_session_id:
             set_fastmcp_session_id(mcp_session_id)
 
@@ -208,13 +222,28 @@ async def get_authenticated_google_service_oauth21(
     """
     store = get_oauth21_session_store()
 
-    # Use the new validation method to ensure session can only access its own credentials
-    credentials = store.get_credentials_with_validation(
-        requested_user_email=user_google_email,
-        session_id=session_id,
-        auth_token_email=auth_token_email,
-        allow_recent_auth=allow_recent_auth,
-    )
+    # Check if we're using environment tokens
+    import os
+    env_user_email = os.getenv("USER_GOOGLE_EMAIL")
+    env_access_token = os.getenv("GOOGLE_ACCESS_TOKEN")
+
+    if env_user_email and env_access_token and env_user_email == user_google_email:
+        # For environment tokens, bypass session validation and get credentials directly
+        logger.debug(f"[{tool_name}] Using environment tokens for {user_google_email}, bypassing session validation")
+        credentials = store.get_credentials(user_google_email)
+
+        if not credentials:
+            # Try to create credentials from environment tokens directly
+            from auth.google_auth import load_credentials_from_env_tokens
+            credentials = load_credentials_from_env_tokens()
+    else:
+        # Use the validation method for normal OAuth flow
+        credentials = store.get_credentials_with_validation(
+            requested_user_email=user_google_email,
+            session_id=session_id,
+            auth_token_email=auth_token_email,
+            allow_recent_auth=allow_recent_auth,
+        )
 
     if not credentials:
         raise GoogleAuthenticationError(

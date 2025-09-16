@@ -109,13 +109,21 @@ def main():
     safe_print("⚙️ Active Configuration:")
 
 
-    # Redact client secret for security
+    # Redact sensitive values for security
     client_secret = os.getenv('GOOGLE_OAUTH_CLIENT_SECRET', 'Not Set')
     redacted_secret = f"{client_secret[:4]}...{client_secret[-4:]}" if len(client_secret) > 8 else "Invalid or too short"
+
+    access_token = os.getenv('GOOGLE_ACCESS_TOKEN', 'Not Set')
+    redacted_access_token = f"{access_token[:8]}...{access_token[-8:]}" if len(access_token) > 16 else "Invalid or too short"
+
+    refresh_token = os.getenv('GOOGLE_REFRESH_TOKEN', 'Not Set')
+    redacted_refresh_token = f"{refresh_token[:8]}...{refresh_token[-8:]}" if len(refresh_token) > 16 else "Invalid or too short"
 
     config_vars = {
         "GOOGLE_OAUTH_CLIENT_ID": os.getenv('GOOGLE_OAUTH_CLIENT_ID', 'Not Set'),
         "GOOGLE_OAUTH_CLIENT_SECRET": redacted_secret,
+        "GOOGLE_ACCESS_TOKEN": redacted_access_token,
+        "GOOGLE_REFRESH_TOKEN": redacted_refresh_token,
         "USER_GOOGLE_EMAIL": os.getenv('USER_GOOGLE_EMAIL', 'Not Set'),
         "MCP_SINGLE_USER_MODE": os.getenv('MCP_SINGLE_USER_MODE', 'false'),
         "MCP_ENABLE_OAUTH21": os.getenv('MCP_ENABLE_OAUTH21', 'false'),

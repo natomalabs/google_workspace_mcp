@@ -2,26 +2,23 @@
 
 import asyncio
 import json
-import jwt
 import logging
 import os
+from typing import Any, Dict, List, Optional, Tuple
 
-from typing import List, Optional, Tuple, Dict, Any
-
+import jwt
+from google.auth.exceptions import RefreshError
+from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
-from google.auth.transport.requests import Request
-from google.auth.exceptions import RefreshError
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from auth.scopes import SCOPES, get_current_scopes # noqa
-from auth.oauth21_session_store import get_oauth21_session_store
+
 from auth.credential_store import get_credential_store
+from auth.oauth21_session_store import get_oauth21_session_store
 from auth.oauth_config import get_oauth_config, is_stateless_mode
-from core.config import (
-    get_transport_mode,
-    get_oauth_redirect_uri,
-)
+from auth.scopes import SCOPES, get_current_scopes  # noqa
+from core.config import get_oauth_redirect_uri, get_transport_mode
 from core.context import get_fastmcp_session_id
 
 # Try to import FastMCP dependencies (may not be available in all environments)
@@ -135,11 +132,15 @@ def save_credentials_to_session(session_id: str, credentials: Credentials):
             client_secret=credentials.client_secret,
             scopes=credentials.scopes,
             expiry=credentials.expiry,
-            mcp_session_id=session_id
+            mcp_session_id=session_id,
         )
-        logger.debug(f"Credentials saved to OAuth21SessionStore for session_id: {session_id}, user: {user_email}")
+        logger.debug(
+            f"Credentials saved to OAuth21SessionStore for session_id: {session_id}, user: {user_email}"
+        )
     else:
-        logger.warning(f"Could not save credentials to session store - no user email found for session: {session_id}")
+        logger.warning(
+            f"Could not save credentials to session store - no user email found for session: {session_id}"
+        )
 
 
 def load_credentials_from_session(session_id: str) -> Optional[Credentials]:
@@ -155,6 +156,124 @@ def load_credentials_from_session(session_id: str) -> Optional[Credentials]:
             f"No credentials found in OAuth21SessionStore for session_id: {session_id}"
         )
     return credentials
+
+
+def load_credentials_from_env_tokens() -> Optional[Credentials]:
+    """
+    Creates credentials directly from environment variables containing access tokens.
+
+    This is useful when you have an external process managing token refresh and just want
+    to provide the current access token to the server.
+
+    WARNING: Environment tokens are process-wide and NOT suitable for multi-tenant systems
+    as they can cause data contamination between users. Use request-level token passing instead.
+
+    Environment variables used:
+        - GOOGLE_ACCESS_TOKEN: The access token (required)
+        - USER_GOOGLE_EMAIL: The user's Google email address (required)
+        - GOOGLE_REFRESH_TOKEN: The refresh token (optional)
+        - GOOGLE_OAUTH_CLIENT_ID: OAuth client ID (optional)
+        - GOOGLE_OAUTH_CLIENT_SECRET: OAuth client secret (optional)
+
+    Returns:
+        Credentials object created from environment tokens, or None if not available.
+    """
+    access_token = os.getenv("GOOGLE_ACCESS_TOKEN")
+    refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN")
+    user_email = os.getenv("USER_GOOGLE_EMAIL")
+    client_id = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+    client_secret = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+
+    if not access_token:
+        logger.debug("GOOGLE_ACCESS_TOKEN not found in environment variables")
+        return None
+
+    if not user_email:
+        logger.warning("GOOGLE_ACCESS_TOKEN provided but USER_GOOGLE_EMAIL is missing")
+        return None
+
+    # Note: Refresh token and client credentials are optional since external processes can handle refresh
+    if refresh_token:
+        logger.debug(
+            "GOOGLE_REFRESH_TOKEN provided - will attempt refresh if access token expires"
+        )
+    else:
+        logger.debug(
+            "No refresh token provided - assuming external process handles token refresh"
+        )
+
+    try:
+        # Get default scopes to use for environment credentials
+        from auth.scopes import get_current_scopes
+
+        default_scopes = get_current_scopes()
+
+        # Create credentials object from tokens
+        credentials = Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri=None,
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=default_scopes,  # Use current tool scopes for environment tokens
+        )
+
+        logger.info(
+            f"Created credentials from environment tokens for user: {user_email}"
+        )
+        return credentials
+    except Exception as e:
+        logger.error(f"Error creating credentials from environment tokens: {e}")
+        return None
+
+
+def load_credentials_from_request_tokens(
+    access_token: str,
+    user_email: str,
+    refresh_token: Optional[str] = None,
+    client_id: Optional[str] = None,
+    client_secret: Optional[str] = None
+) -> Optional[Credentials]:
+    """
+    Creates credentials directly from provided tokens (request-level).
+
+    This is the SAFE approach for multi-tenant systems where tokens are passed
+    per request rather than using global environment variables.
+
+    Args:
+        access_token: The Google access token (required)
+        user_email: The user's Google email address (required)
+        refresh_token: The refresh token (optional)
+        client_id: OAuth client ID (optional, for refresh)
+        client_secret: OAuth client secret (optional, for refresh)
+
+    Returns:
+        Credentials object created from provided tokens, or None if invalid.
+    """
+    if not access_token or not user_email:
+        logger.debug("access_token or user_email not provided")
+        return None
+
+    try:
+        # Get default scopes to use for request credentials
+        from auth.scopes import get_current_scopes
+        default_scopes = get_current_scopes()
+
+        # Create credentials object from tokens
+        credentials = Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri=None,
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=default_scopes,
+        )
+
+        logger.info(f"Created credentials from request tokens for user: {user_email}")
+        return credentials
+    except Exception as e:
+        logger.error(f"Error creating credentials from request tokens: {e}")
+        return None
 
 
 def load_client_secrets_from_env() -> Optional[Dict[str, Any]]:
@@ -477,7 +596,7 @@ def handle_auth_callback(
             scopes=credentials.scopes,
             expiry=credentials.expiry,
             mcp_session_id=session_id,
-            issuer="https://accounts.google.com"  # Add issuer for Google tokens
+            issuer="https://accounts.google.com",  # Add issuer for Google tokens
         )
 
         # If session_id is provided, also save to session cache for compatibility
@@ -499,7 +618,7 @@ def get_credentials(
     session_id: Optional[str] = None,
 ) -> Optional[Credentials]:
     """
-    Retrieves stored credentials, prioritizing OAuth 2.1 store, then session, then file. Refreshes if necessary.
+    Retrieves stored credentials, prioritizing environment tokens, OAuth 2.1 store, then session, then file. Refreshes if necessary.
     If credentials are loaded from file and a session_id is present, they are cached in the session.
     In single-user mode, bypasses session mapping and uses any available credentials.
 
@@ -513,7 +632,91 @@ def get_credentials(
     Returns:
         Valid Credentials object or None.
     """
-    # First, try OAuth 2.1 session store if we have a session_id (FastMCP session)
+    # First priority: Check for credentials from environment tokens
+    env_credentials = load_credentials_from_env_tokens()
+    if env_credentials:
+        env_user_email = os.getenv("USER_GOOGLE_EMAIL")
+        logger.info(
+            f"[get_credentials] Found credentials from environment tokens for user: {env_user_email}"
+        )
+
+        # If user_google_email is provided, verify it matches the environment
+        if user_google_email and env_user_email and user_google_email != env_user_email:
+            logger.warning(
+                f"[get_credentials] User email mismatch: requested '{user_google_email}', environment has '{env_user_email}'"
+            )
+            # Continue with environment credentials but log the mismatch
+
+        # Validate scopes for environment token credentials
+        if not all(scope in env_credentials.scopes for scope in required_scopes):
+            logger.warning(
+                f"[get_credentials] Environment token credentials may lack required scopes. Need: {required_scopes}, Have: {env_credentials.scopes}"
+            )
+            # Continue anyway since user provided tokens directly - they may have broader permissions
+
+        logger.info(
+            f"[get_credentials] Using environment token credentials with scopes: {env_credentials.scopes}"
+        )
+
+        # Set authenticated user context for OAuth 2.1 mode compatibility
+        try:
+            from fastmcp.server.dependencies import get_context
+            ctx = get_context()
+            if ctx and env_user_email:
+                ctx.set_state("authenticated_user_email", env_user_email)
+                ctx.set_state("authenticated_via", "environment_tokens")
+                logger.debug(f"[get_credentials] Set authenticated user context: {env_user_email}")
+        except (ImportError, Exception) as e:
+            logger.debug(f"[get_credentials] Could not set authenticated user context: {e}")
+
+        # Always try to cache credentials in session store, even without explicit session_id
+        if env_user_email:
+            # Try to get session_id if not provided
+            if not session_id:
+                try:
+                    from core.context import get_fastmcp_session_id
+                    session_id = get_fastmcp_session_id()
+                    if session_id:
+                        logger.debug(f"[get_credentials] Got FastMCP session ID: {session_id}")
+                except Exception as e:
+                    logger.debug(f"[get_credentials] Could not get FastMCP session ID: {e}")
+
+            try:
+                store = get_oauth21_session_store()
+
+                # Store the session with proper binding
+                session_token = store.store_session(
+                    user_email=env_user_email,
+                    access_token=env_credentials.token,
+                    refresh_token=env_credentials.refresh_token,
+                    token_uri=env_credentials.token_uri,
+                    client_id=env_credentials.client_id,
+                    client_secret=env_credentials.client_secret,
+                    scopes=required_scopes,  # Use required scopes since env tokens don't specify
+                    expiry=env_credentials.expiry,
+                    mcp_session_id=session_id,  # May be None, which is OK
+                    issuer="https://accounts.google.com",
+                )
+
+                logger.info(
+                    f"[get_credentials] Cached environment credentials in OAuth21SessionStore for session: {session_id}, session_token: {session_token}"
+                )
+
+                # If we have a session_id, ensure the binding exists
+                if session_id and hasattr(store, '_session_auth_binding'):
+                    with store._lock:
+                        if session_id not in store._session_auth_binding:
+                            store._session_auth_binding[session_id] = env_user_email
+                            logger.debug(f"[get_credentials] Created session binding: {session_id} -> {env_user_email}")
+
+            except Exception as e:
+                logger.warning(
+                    f"[get_credentials] Failed to cache environment credentials: {e}"
+                )
+
+        return env_credentials
+
+    # Second priority: try OAuth 2.1 session store if we have a session_id (FastMCP session)
     if session_id:
         try:
             store = get_oauth21_session_store()
@@ -521,7 +724,9 @@ def get_credentials(
             # Try to get credentials by MCP session
             credentials = store.get_credentials_by_mcp_session(session_id)
             if credentials:
-                logger.info(f"[get_credentials] Found OAuth 2.1 credentials for MCP session {session_id}")
+                logger.info(
+                    f"[get_credentials] Found OAuth 2.1 credentials for MCP session {session_id}"
+                )
 
                 # Check scopes
                 if not all(scope in credentials.scopes for scope in required_scopes):
@@ -537,7 +742,9 @@ def get_credentials(
                     # Try to refresh
                     try:
                         credentials.refresh(Request())
-                        logger.info(f"[get_credentials] Refreshed OAuth 2.1 credentials for session {session_id}")
+                        logger.info(
+                            f"[get_credentials] Refreshed OAuth 2.1 credentials for session {session_id}"
+                        )
                         # Update stored credentials
                         user_email = store.get_user_by_mcp_session(session_id)
                         if user_email:
@@ -547,11 +754,13 @@ def get_credentials(
                                 refresh_token=credentials.refresh_token,
                                 scopes=credentials.scopes,
                                 expiry=credentials.expiry,
-                                mcp_session_id=session_id
+                                mcp_session_id=session_id,
                             )
                         return credentials
                     except Exception as e:
-                        logger.error(f"[get_credentials] Failed to refresh OAuth 2.1 credentials: {e}")
+                        logger.error(
+                            f"[get_credentials] Failed to refresh OAuth 2.1 credentials: {e}"
+                        )
                         return None
         except ImportError:
             pass  # OAuth 2.1 store not available
@@ -672,7 +881,9 @@ def get_credentials(
                     credential_store = get_credential_store()
                     credential_store.store_credential(user_google_email, credentials)
                 else:
-                    logger.info(f"Skipping credential file save in stateless mode for {user_google_email}")
+                    logger.info(
+                        f"Skipping credential file save in stateless mode for {user_google_email}"
+                    )
 
                 # Also update OAuth21SessionStore
                 store = get_oauth21_session_store()
@@ -686,7 +897,7 @@ def get_credentials(
                     scopes=credentials.scopes,
                     expiry=credentials.expiry,
                     mcp_session_id=session_id,
-                    issuer="https://accounts.google.com"  # Add issuer for Google tokens
+                    issuer="https://accounts.google.com",  # Add issuer for Google tokens
                 )
 
             if session_id:  # Update session cache if it was the source or is active
@@ -775,9 +986,13 @@ async def get_authenticated_google_service(
             # First try context variable (works in async context)
             session_id = get_fastmcp_session_id()
             if session_id:
-                logger.debug(f"[{tool_name}] Got FastMCP session ID from context: {session_id}")
+                logger.debug(
+                    f"[{tool_name}] Got FastMCP session ID from context: {session_id}"
+                )
             else:
-                logger.debug(f"[{tool_name}] Context variable returned None/empty session ID")
+                logger.debug(
+                    f"[{tool_name}] Context variable returned None/empty session ID"
+                )
         except Exception as e:
             logger.debug(
                 f"[{tool_name}] Could not get FastMCP session from context: {e}"
@@ -787,17 +1002,25 @@ async def get_authenticated_google_service(
         if not session_id and get_fastmcp_context:
             try:
                 fastmcp_ctx = get_fastmcp_context()
-                if fastmcp_ctx and hasattr(fastmcp_ctx, 'session_id'):
+                if fastmcp_ctx and hasattr(fastmcp_ctx, "session_id"):
                     session_id = fastmcp_ctx.session_id
-                    logger.debug(f"[{tool_name}] Got FastMCP session ID directly: {session_id}")
+                    logger.debug(
+                        f"[{tool_name}] Got FastMCP session ID directly: {session_id}"
+                    )
                 else:
-                    logger.debug(f"[{tool_name}] FastMCP context exists but no session_id attribute")
+                    logger.debug(
+                        f"[{tool_name}] FastMCP context exists but no session_id attribute"
+                    )
             except Exception as e:
-                logger.debug(f"[{tool_name}] Could not get FastMCP context directly: {e}")
+                logger.debug(
+                    f"[{tool_name}] Could not get FastMCP context directly: {e}"
+                )
 
         # Final fallback: log if we still don't have session_id
         if not session_id:
-            logger.warning(f"[{tool_name}] Unable to obtain FastMCP session ID from any source")
+            logger.warning(
+                f"[{tool_name}] Unable to obtain FastMCP session ID from any source"
+            )
 
     logger.info(
         f"[{tool_name}] Attempting to get authenticated {service_name} service. Email: '{user_google_email}', Session: '{session_id}'"
@@ -818,8 +1041,12 @@ async def get_authenticated_google_service(
     )
 
     if not credentials or not credentials.valid:
-        logger.warning(f"[{tool_name}] No valid credentials. Email: '{user_google_email}'.")
-        logger.info(f"[{tool_name}] Valid email '{user_google_email}' provided, initiating auth flow.")
+        logger.warning(
+            f"[{tool_name}] No valid credentials. Email: '{user_google_email}'."
+        )
+        logger.info(
+            f"[{tool_name}] Valid email '{user_google_email}' provided, initiating auth flow."
+        )
 
         # Ensure OAuth callback is available
         from auth.oauth_callback_server import ensure_oauth_callback_available
