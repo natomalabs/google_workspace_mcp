@@ -398,6 +398,11 @@ async def create_event(
     if attachments and isinstance(attachments, str):
         attachments = [a.strip() for a in attachments.split(',') if a.strip()]
         logger.info(f"[create_event] Parsed attachments list from string: {attachments}")
+    
+    # If attendees value is a string, split by comma and strip whitespace
+    if attendees and isinstance(attendees, str):
+        attendees = [a.strip() for a in attendees.split(',') if a.strip()]
+        logger.info(f"[create_event] Parsed attendees list from string: {attendees}")
     event_body: Dict[str, Any] = {
         "summary": summary,
         "start": (
@@ -569,6 +574,11 @@ async def modify_event(
     logger.info(
         f"[modify_event] Invoked. Email: '{user_google_email}', Event ID: {event_id}"
     )
+    
+    # If attendees value is a string, split by comma and strip whitespace
+    if attendees and isinstance(attendees, str):
+        attendees = [a.strip() for a in attendees.split(',') if a.strip()]
+        logger.info(f"[modify_event] Parsed attendees list from string: {attendees}")
 
     # Build the event body with only the fields that are provided
     event_body: Dict[str, Any] = {}
