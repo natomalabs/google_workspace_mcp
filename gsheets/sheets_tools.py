@@ -277,6 +277,11 @@ async def create_spreadsheet(
         str: Information about the newly created spreadsheet including ID and URL.
     """
     logger.info(f"[create_spreadsheet] Invoked. Email: '{user_google_email}', Title: {title}")
+    
+    # If sheet_names value is a string, split by comma and strip whitespace
+    if sheet_names and isinstance(sheet_names, str):
+        sheet_names = [s.strip() for s in sheet_names.split(',') if s.strip()]
+        logger.info(f"[create_spreadsheet] Parsed sheet_names list from string: {sheet_names}")
 
     spreadsheet_body = {
         "properties": {

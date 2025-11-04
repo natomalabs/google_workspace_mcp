@@ -412,6 +412,11 @@ async def get_gmail_messages_content_batch(
     Returns:
         str: A formatted list of message contents with separators.
     """
+    # If message_ids value is a string, split by comma and strip whitespace
+    if message_ids and isinstance(message_ids, str):
+        message_ids = [s.strip() for s in message_ids.split(',') if s.strip()]
+        logger.info(f"[get_gmail_messages_content_batch] Parsed message_ids list from string: {message_ids}")
+    
     logger.info(
         f"[get_gmail_messages_content_batch] Invoked. Message count: {len(message_ids)}, Email: '{user_google_email}'"
     )
@@ -858,6 +863,11 @@ async def get_gmail_threads_content_batch(
     Returns:
         str: A formatted list of thread contents with separators.
     """
+    # If thread_ids value is a string, split by comma and strip whitespace
+    if thread_ids and isinstance(thread_ids, str):
+        thread_ids = [s.strip() for s in thread_ids.split(',') if s.strip()]
+        logger.info(f"[get_gmail_threads_content_batch] Parsed thread_ids list from string: {thread_ids}")
+    
     logger.info(
         f"[get_gmail_threads_content_batch] Invoked. Thread count: {len(thread_ids)}, Email: '{user_google_email}'"
     )
@@ -1100,6 +1110,15 @@ async def modify_gmail_message_labels(
     logger.info(
         f"[modify_gmail_message_labels] Invoked. Email: '{user_google_email}', Message ID: '{message_id}'"
     )
+    
+    # If label IDs are strings, split by comma and strip whitespace
+    if add_label_ids and isinstance(add_label_ids, str):
+        add_label_ids = [s.strip() for s in add_label_ids.split(',') if s.strip()]
+        logger.info(f"[modify_gmail_message_labels] Parsed add_label_ids list from string: {add_label_ids}")
+    
+    if remove_label_ids and isinstance(remove_label_ids, str):
+        remove_label_ids = [s.strip() for s in remove_label_ids.split(',') if s.strip()]
+        logger.info(f"[modify_gmail_message_labels] Parsed remove_label_ids list from string: {remove_label_ids}")
 
     if not add_label_ids and not remove_label_ids:
         raise Exception(
@@ -1150,6 +1169,19 @@ async def batch_modify_gmail_message_labels(
     logger.info(
         f"[batch_modify_gmail_message_labels] Invoked. Email: '{user_google_email}', Message IDs: '{message_ids}'"
     )
+    
+    # If list parameters are strings, split by comma and strip whitespace
+    if message_ids and isinstance(message_ids, str):
+        message_ids = [s.strip() for s in message_ids.split(',') if s.strip()]
+        logger.info(f"[batch_modify_gmail_message_labels] Parsed message_ids list from string: {message_ids}")
+    
+    if add_label_ids and isinstance(add_label_ids, str):
+        add_label_ids = [s.strip() for s in add_label_ids.split(',') if s.strip()]
+        logger.info(f"[batch_modify_gmail_message_labels] Parsed add_label_ids list from string: {add_label_ids}")
+    
+    if remove_label_ids and isinstance(remove_label_ids, str):
+        remove_label_ids = [s.strip() for s in remove_label_ids.split(',') if s.strip()]
+        logger.info(f"[batch_modify_gmail_message_labels] Parsed remove_label_ids list from string: {remove_label_ids}")
 
     if not add_label_ids and not remove_label_ids:
         raise Exception(
