@@ -84,9 +84,25 @@ if not is_stateless_mode():
 else:
     logger.info("🔍 Skipping credentials directory check (stateless mode)")
 
-# Set transport mode for HTTP (FastMCP CLI defaults to streamable-http)
-set_transport_mode('streamable-http')
-configure_server_for_http()
+# Detect deployment mode
+# Natoma provides pre-authenticated tokens via environment variables in stateless mode
+# and uses STDIO transport. Only configure HTTP auth provider when actually using HTTP transport.
+import os
+is_stateless_with_tokens = (
+    is_stateless_mode() and 
+    os.getenv("GOOGLE_ACCESS_TOKEN") and 
+    os.getenv("USER_GOOGLE_EMAIL")
+)
+
+if is_stateless_with_tokens:
+    # Natoma/stateless mode: tokens provided via environment, using STDIO transport
+    logger.info("Stateless mode detected with environment tokens - skipping OAuth provider setup")
+    set_transport_mode('stdio')
+else:
+    # Standard FastMCP deployment: using streamable-http with OAuth 2.1
+    logger.info("Configuring for streamable-http transport with OAuth 2.1")
+    set_transport_mode('streamable-http')
+    configure_server_for_http()
 
 # Import all tool modules to register their @server.tool() decorators
 import gmail.gmail_tools

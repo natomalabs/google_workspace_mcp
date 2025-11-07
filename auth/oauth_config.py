@@ -111,11 +111,21 @@ class OAuthConfig:
     def is_configured(self) -> bool:
         """
         Check if OAuth is properly configured.
+        
+        For OAuth 2.1 mode (e.g., Natoma deployments), only client_id is required
+        as the OAuth proxy may handle client_secret. For OAuth 2.0 mode, both
+        client_id and client_secret are required.
 
         Returns:
             True if OAuth client credentials are available
         """
-        return bool(self.client_id and self.client_secret)
+        if self.oauth21_enabled:
+            # OAuth 2.1 with RemoteAuth: client_id is required for JWT verification
+            # client_secret may be handled by OAuth proxy (e.g., Natoma)
+            return bool(self.client_id)
+        else:
+            # OAuth 2.0: both credentials required for traditional flow
+            return bool(self.client_id and self.client_secret)
 
     def get_oauth_base_url(self) -> str:
         """

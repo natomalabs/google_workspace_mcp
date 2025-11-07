@@ -89,6 +89,8 @@ def configure_server_for_http():
     if oauth21_enabled:
         if not config.is_configured():
             logger.warning("OAuth 2.1 enabled but OAuth credentials not configured")
+            logger.warning("Server will continue without authentication provider")
+            logger.warning("Note: This is expected when running on Natoma - OAuth config will be provided at runtime")
             return
 
         if not GOOGLE_REMOTE_AUTH_AVAILABLE:
@@ -104,10 +106,17 @@ def configure_server_for_http():
             _auth_provider = GoogleRemoteAuthProvider()
             server.auth = _auth_provider
             set_auth_provider(_auth_provider)
-            logger.debug("OAuth 2.1 authentication enabled")
+            logger.info("✓ OAuth 2.1 authentication provider initialized successfully")
+        except ValueError as ve:
+            # ValueError typically means missing configuration
+            logger.error(f"Configuration error initializing GoogleRemoteAuthProvider: {ve}")
+            logger.error("Note: If running on Natoma, this error should not occur as Natoma provides OAuth config")
+            logger.warning("Server will continue without authentication provider - tools may require manual authentication")
+            # Don't raise - let server start without auth provider
         except Exception as e:
             logger.error(f"Failed to initialize GoogleRemoteAuthProvider: {e}", exc_info=True)
-            raise
+            logger.warning("Server will continue without authentication provider")
+            # Don't raise - let server start without auth provider
     else:
         logger.info("OAuth 2.0 mode - Server will use legacy authentication.")
         server.auth = None

@@ -59,42 +59,48 @@ class GoogleRemoteAuthProvider(RemoteAuthProvider):
         if not REMOTEAUTHPROVIDER_AVAILABLE:
             raise ImportError("FastMCP v2.11.1+ required for RemoteAuthProvider")
 
-        # Get configuration from OAuth config
-        from auth.oauth_config import get_oauth_config
-        config = get_oauth_config()
-        
-        self.client_id = config.client_id
-        self.client_secret = config.client_secret
-        self.base_url = config.get_oauth_base_url()
-        self.port = config.port
+        try:
+            # Get configuration from OAuth config
+            from auth.oauth_config import get_oauth_config
+            config = get_oauth_config()
+            
+            self.client_id = config.client_id
+            self.client_secret = config.client_secret
+            self.base_url = config.get_oauth_base_url()
+            self.port = config.port
 
-        if not self.client_id:
-            logger.error(
-                "GOOGLE_OAUTH_CLIENT_ID not set - OAuth 2.1 authentication will not work"
+            logger.debug(f"GoogleRemoteAuthProvider init: client_id={'set' if self.client_id else 'not set'}, base_url={self.base_url}")
+
+            if not self.client_id:
+                logger.error(
+                    "GOOGLE_OAUTH_CLIENT_ID not set - OAuth 2.1 authentication will not work"
+                )
+                raise ValueError(
+                    "GOOGLE_OAUTH_CLIENT_ID environment variable is required for OAuth 2.1 authentication"
+                )
+
+            # Configure JWT verifier for Google tokens
+            token_verifier = JWTVerifier(
+                jwks_uri="https://www.googleapis.com/oauth2/v3/certs",
+                issuer="https://accounts.google.com",
+                audience=self.client_id,  # Always use actual client_id
+                algorithm="RS256",
             )
-            raise ValueError(
-                "GOOGLE_OAUTH_CLIENT_ID environment variable is required for OAuth 2.1 authentication"
+
+            # Initialize RemoteAuthProvider with base URL (no /mcp/ suffix)
+            # The /mcp/ resource URL is handled in the protected resource metadata endpoint
+            super().__init__(
+                token_verifier=token_verifier,
+                authorization_servers=[AnyHttpUrl(self.base_url)],
+                resource_server_url=self.base_url,
             )
 
-        # Configure JWT verifier for Google tokens
-        token_verifier = JWTVerifier(
-            jwks_uri="https://www.googleapis.com/oauth2/v3/certs",
-            issuer="https://accounts.google.com",
-            audience=self.client_id,  # Always use actual client_id
-            algorithm="RS256",
-        )
-
-        # Initialize RemoteAuthProvider with base URL (no /mcp/ suffix)
-        # The /mcp/ resource URL is handled in the protected resource metadata endpoint
-        super().__init__(
-            token_verifier=token_verifier,
-            authorization_servers=[AnyHttpUrl(self.base_url)],
-            resource_server_url=self.base_url,
-        )
-
-        logger.debug(
-            f"Initialized GoogleRemoteAuthProvider with base_url={self.base_url}"
-        )
+            logger.info(
+                f"✓ GoogleRemoteAuthProvider initialized with base_url={self.base_url}"
+            )
+        except Exception as e:
+            logger.error(f"Error in GoogleRemoteAuthProvider.__init__: {e}", exc_info=True)
+            raise
 
     def get_routes(self) -> List[Route]:
         """
