@@ -8,6 +8,7 @@ import logging
 import asyncio
 import os
 from typing import Optional, List, Literal
+from pydantic import Field
 
 from auth.service_decorator import require_google_service
 from core.server import server
@@ -222,7 +223,7 @@ async def search_custom_siterestrict(
     service,
     user_google_email: str,
     q: str,
-    sites: List[str],
+    sites: List[str] = Field(..., description="List of sites/domains to search within"),
     num: int = 10,
     start: int = 1,
     safe: Literal["active", "moderate", "off"] = "off"
@@ -242,11 +243,6 @@ async def search_custom_siterestrict(
         str: Formatted search results from the specified sites.
     """
     logger.info(f"[search_custom_siterestrict] Invoked. Email: '{user_google_email}', Query: '{q}', Sites: {sites}")
-    
-    # If sites value is a string, split by comma and strip whitespace
-    if sites and isinstance(sites, str):
-        sites = [s.strip() for s in sites.split(',') if s.strip()]
-        logger.info(f"[search_custom_siterestrict] Parsed sites list from string: {sites}")
 
     # Build site restriction query
     site_query = " OR ".join([f"site:{site}" for site in sites])

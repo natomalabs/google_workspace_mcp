@@ -14,6 +14,7 @@ from typing import List, Optional, Dict, Any, Union
 
 from googleapiclient.errors import HttpError
 from googleapiclient.discovery import build
+from pydantic import Field
 
 from auth.service_decorator import require_google_service
 from core.utils import handle_http_errors
@@ -362,9 +363,9 @@ async def create_event(
     calendar_id: str = "primary",
     description: Optional[str] = None,
     location: Optional[str] = None,
-    attendees: Optional[List[str]] = None,
+    attendees: List[str] = Field(default=[], description="Attendee email addresses"),
     timezone: Optional[str] = None,
-    attachments: Optional[List[str]] = None,
+    attachments: List[str] = Field(default=[], description="Google Drive file URLs or IDs"),
     add_google_meet: bool = False,
     reminders: Optional[Union[str, List[Dict[str, Any]]]] = None,
     use_default_reminders: bool = True,
@@ -393,16 +394,6 @@ async def create_event(
     logger.info(
         f"[create_event] Invoked. Email: '{user_google_email}', Summary: {summary}"
     )
-    logger.info(f"[create_event] Incoming attachments param: {attachments}")
-    # If attachments value is a string, split by comma and strip whitespace
-    if attachments and isinstance(attachments, str):
-        attachments = [a.strip() for a in attachments.split(',') if a.strip()]
-        logger.info(f"[create_event] Parsed attachments list from string: {attachments}")
-    
-    # If attendees value is a string, split by comma and strip whitespace
-    if attendees and isinstance(attendees, str):
-        attendees = [a.strip() for a in attendees.split(',') if a.strip()]
-        logger.info(f"[create_event] Parsed attendees list from string: {attendees}")
     event_body: Dict[str, Any] = {
         "summary": summary,
         "start": (
@@ -544,7 +535,7 @@ async def modify_event(
     end_time: Optional[str] = None,
     description: Optional[str] = None,
     location: Optional[str] = None,
-    attendees: Optional[List[str]] = None,
+    attendees: List[str] = Field(default=[], description="New attendee email addresses"),
     timezone: Optional[str] = None,
     add_google_meet: Optional[bool] = None,
     reminders: Optional[Union[str, List[Dict[str, Any]]]] = None,
@@ -574,11 +565,6 @@ async def modify_event(
     logger.info(
         f"[modify_event] Invoked. Email: '{user_google_email}', Event ID: {event_id}"
     )
-    
-    # If attendees value is a string, split by comma and strip whitespace
-    if attendees and isinstance(attendees, str):
-        attendees = [a.strip() for a in attendees.split(',') if a.strip()]
-        logger.info(f"[modify_event] Parsed attendees list from string: {attendees}")
 
     # Build the event body with only the fields that are provided
     event_body: Dict[str, Any] = {}
@@ -602,7 +588,7 @@ async def modify_event(
         event_body["description"] = description
     if location is not None:
         event_body["location"] = location
-    if attendees is not None:
+    if attendees:
         event_body["attendees"] = [{"email": email} for email in attendees]
     
     # Handle reminders

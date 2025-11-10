@@ -8,6 +8,7 @@ import logging
 import asyncio
 import json
 from typing import List, Optional, Union
+from pydantic import Field
 
 
 from auth.service_decorator import require_google_service
@@ -263,7 +264,7 @@ async def create_spreadsheet(
     service,
     user_google_email: str,
     title: str,
-    sheet_names: Optional[List[str]] = None,
+    sheet_names: List[str] = Field(default=[], description="List of sheet names to create"),
 ) -> str:
     """
     Creates a new Google Spreadsheet.
@@ -277,11 +278,6 @@ async def create_spreadsheet(
         str: Information about the newly created spreadsheet including ID and URL.
     """
     logger.info(f"[create_spreadsheet] Invoked. Email: '{user_google_email}', Title: {title}")
-    
-    # If sheet_names value is a string, split by comma and strip whitespace
-    if sheet_names and isinstance(sheet_names, str):
-        sheet_names = [s.strip() for s in sheet_names.split(',') if s.strip()]
-        logger.info(f"[create_spreadsheet] Parsed sheet_names list from string: {sheet_names}")
 
     spreadsheet_body = {
         "properties": {
