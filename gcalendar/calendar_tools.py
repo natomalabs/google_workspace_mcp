@@ -535,7 +535,7 @@ async def modify_event(
     end_time: Optional[str] = None,
     description: Optional[str] = None,
     location: Optional[str] = None,
-    attendees: List[str] = Field(default=[], description="New attendee email addresses"),
+    attendees: Optional[List[str]] = None,
     timezone: Optional[str] = None,
     add_google_meet: Optional[bool] = None,
     reminders: Optional[Union[str, List[Dict[str, Any]]]] = None,
@@ -588,7 +588,7 @@ async def modify_event(
         event_body["description"] = description
     if location is not None:
         event_body["location"] = location
-    if attendees:
+    if attendees is not None:
         event_body["attendees"] = [{"email": email} for email in attendees]
     
     # Handle reminders
@@ -653,11 +653,11 @@ async def modify_event(
         )
 
         # Preserve existing fields if not provided in the update
+        # Note: attendees is already handled above (line 591-592), don't pass it here
         _preserve_existing_fields(event_body, existing_event, {
             "summary": summary,
             "description": description,
-            "location": location,
-            "attendees": attendees
+            "location": location
         })
 
         # Handle Google Meet conference data
