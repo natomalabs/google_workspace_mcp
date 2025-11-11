@@ -142,9 +142,9 @@ def _extract_headers(payload: dict, header_names: List[str]) -> Dict[str, str]:
 def _prepare_gmail_message(
     subject: str,
     body: str,
-    to: Optional[str] = None,
-    cc: Optional[str] = None,
-    bcc: Optional[str] = None,
+    to: List[str],
+    cc: List[str],
+    bcc: List[str],
     thread_id: Optional[str] = None,
     in_reply_to: Optional[str] = None,
     references: Optional[str] = None,
@@ -155,9 +155,9 @@ def _prepare_gmail_message(
     Args:
         subject: Email subject
         body: Email body (plain text)
-        to: Optional recipient email address
-        cc: Optional CC email address
-        bcc: Optional BCC email address
+        to: List of recipient email addresses
+        cc: List of CC email addresses
+        bcc: List of BCC email addresses
         thread_id: Optional Gmail thread ID to reply within
         in_reply_to: Optional Message-ID of the message being replied to
         references: Optional chain of Message-IDs for proper threading
@@ -174,13 +174,13 @@ def _prepare_gmail_message(
     message = MIMEText(body)
     message["subject"] = reply_subject
 
-    # Add recipients if provided
+    # Add recipients if provided (join arrays with commas)
     if to:
-        message["to"] = to
+        message["to"] = ", ".join(to)
     if cc:
-        message["cc"] = cc
+        message["cc"] = ", ".join(cc)
     if bcc:
-        message["bcc"] = bcc
+        message["bcc"] = ", ".join(bcc)
 
     # Add reply headers for threading
     if in_reply_to:
@@ -396,7 +396,7 @@ async def get_gmail_message_content(
 @require_google_service("gmail", "gmail_read")
 async def get_gmail_messages_content_batch(
     service,
-    message_ids: List[str],
+    message_ids: List[str] = Field(..., description="List of Gmail message IDs to retrieve (max 25 per batch)"),
     user_google_email: str,
     format: Literal["full", "metadata"] = "full",
 ) -> str:
@@ -412,11 +412,6 @@ async def get_gmail_messages_content_batch(
     Returns:
         str: A formatted list of message contents with separators.
     """
-    # If message_ids value is a string, split by comma and strip whitespace
-    if message_ids and isinstance(message_ids, str):
-        message_ids = [s.strip() for s in message_ids.split(',') if s.strip()]
-        logger.info(f"[get_gmail_messages_content_batch] Parsed message_ids list from string: {message_ids}")
-    
     logger.info(
         f"[get_gmail_messages_content_batch] Invoked. Message count: {len(message_ids)}, Email: '{user_google_email}'"
     )
@@ -576,11 +571,11 @@ async def get_gmail_messages_content_batch(
 async def send_gmail_message(
     service,
     user_google_email: str,
-    to: str = Body(..., description="Recipient email address."),
+    to: List[str] = Field(..., description="Recipient email address(es)"),
     subject: str = Body(..., description="Email subject."),
     body: str = Body(..., description="Email body (plain text)."),
-    cc: Optional[str] = Body(None, description="Optional CC email address."),
-    bcc: Optional[str] = Body(None, description="Optional BCC email address."),
+    cc: List[str] = Field(default=[], description="CC email address(es)"),
+    bcc: List[str] = Field(default=[], description="BCC email address(es)"),
     thread_id: Optional[str] = Body(None, description="Optional Gmail thread ID to reply within."),
     in_reply_to: Optional[str] = Body(None, description="Optional Message-ID of the message being replied to."),
     references: Optional[str] = Body(None, description="Optional chain of Message-IDs for proper threading."),
@@ -589,11 +584,11 @@ async def send_gmail_message(
     Sends an email using the user's Gmail account. Supports both new emails and replies.
 
     Args:
-        to (str): Recipient email address.
+        to (List[str]): Recipient email address(es).
         subject (str): Email subject.
         body (str): Email body (plain text).
-        cc (Optional[str]): Optional CC email address.
-        bcc (Optional[str]): Optional BCC email address.
+        cc (List[str]): CC email address(es).
+        bcc (List[str]): BCC email address(es).
         user_google_email (str): The user's Google email address. Required.
         thread_id (Optional[str]): Optional Gmail thread ID to reply within. When provided, sends a reply.
         in_reply_to (Optional[str]): Optional Message-ID of the message being replied to. Used for proper threading.
@@ -604,20 +599,20 @@ async def send_gmail_message(
 
     Examples:
         # Send a new email
-        send_gmail_message(to="user@example.com", subject="Hello", body="Hi there!")
+        send_gmail_message(to=["user@example.com"], subject="Hello", body="Hi there!")
 
         # Send an email with CC and BCC
         send_gmail_message(
-            to="user@example.com",
-            cc="manager@example.com",
-            bcc="archive@example.com",
+            to=["user@example.com"],
+            cc=["manager@example.com"],
+            bcc=["archive@example.com"],
             subject="Project Update",
             body="Here's the latest update..."
         )
 
         # Send a reply
         send_gmail_message(
-            to="user@example.com",
+            to=["user@example.com"],
             subject="Re: Meeting tomorrow",
             body="Thanks for the update!",
             thread_id="thread_123",
@@ -663,9 +658,9 @@ async def draft_gmail_message(
     user_google_email: str,
     subject: str = Body(..., description="Email subject."),
     body: str = Body(..., description="Email body (plain text)."),
-    to: Optional[str] = Body(None, description="Optional recipient email address."),
-    cc: Optional[str] = Body(None, description="Optional CC email address."),
-    bcc: Optional[str] = Body(None, description="Optional BCC email address."),
+    to: List[str] = Field(default=[], description="Recipient email address(es)"),
+    cc: List[str] = Field(default=[], description="CC email address(es)"),
+    bcc: List[str] = Field(default=[], description="BCC email address(es)"),
     thread_id: Optional[str] = Body(None, description="Optional Gmail thread ID to reply within."),
     in_reply_to: Optional[str] = Body(None, description="Optional Message-ID of the message being replied to."),
     references: Optional[str] = Body(None, description="Optional chain of Message-IDs for proper threading."),
@@ -677,9 +672,9 @@ async def draft_gmail_message(
         user_google_email (str): The user's Google email address. Required.
         subject (str): Email subject.
         body (str): Email body (plain text).
-        to (Optional[str]): Optional recipient email address. Can be left empty for drafts.
-        cc (Optional[str]): Optional CC email address.
-        bcc (Optional[str]): Optional BCC email address.
+        to (List[str]): Recipient email address(es). Can be left empty for drafts.
+        cc (List[str]): CC email address(es).
+        bcc (List[str]): BCC email address(es).
         thread_id (Optional[str]): Optional Gmail thread ID to reply within. When provided, creates a reply draft.
         in_reply_to (Optional[str]): Optional Message-ID of the message being replied to. Used for proper threading.
         references (Optional[str]): Optional chain of Message-IDs for proper threading. Should include all previous Message-IDs.
@@ -689,22 +684,22 @@ async def draft_gmail_message(
 
     Examples:
         # Create a new draft
-        draft_gmail_message(subject="Hello", body="Hi there!", to="user@example.com")
+        draft_gmail_message(subject="Hello", body="Hi there!", to=["user@example.com"])
 
         # Create a draft with CC and BCC
         draft_gmail_message(
             subject="Project Update",
             body="Here's the latest update...",
-            to="user@example.com",
-            cc="manager@example.com",
-            bcc="archive@example.com"
+            to=["user@example.com"],
+            cc=["manager@example.com"],
+            bcc=["archive@example.com"]
         )
 
         # Create a reply draft
         draft_gmail_message(
             subject="Re: Meeting tomorrow",
             body="Thanks for the update!",
-            to="user@example.com",
+            to=["user@example.com"],
             thread_id="thread_123",
             in_reply_to="<message123@gmail.com>",
             references="<original@gmail.com> <message123@gmail.com>"
@@ -849,7 +844,7 @@ async def get_gmail_thread_content(
 @handle_http_errors("get_gmail_threads_content_batch", is_read_only=True, service_type="gmail")
 async def get_gmail_threads_content_batch(
     service,
-    thread_ids: List[str],
+    thread_ids: List[str] = Field(..., description="List of Gmail thread IDs to retrieve"),
     user_google_email: str,
 ) -> str:
     """
@@ -863,11 +858,6 @@ async def get_gmail_threads_content_batch(
     Returns:
         str: A formatted list of thread contents with separators.
     """
-    # If thread_ids value is a string, split by comma and strip whitespace
-    if thread_ids and isinstance(thread_ids, str):
-        thread_ids = [s.strip() for s in thread_ids.split(',') if s.strip()]
-        logger.info(f"[get_gmail_threads_content_batch] Parsed thread_ids list from string: {thread_ids}")
-    
     logger.info(
         f"[get_gmail_threads_content_batch] Invoked. Thread count: {len(thread_ids)}, Email: '{user_google_email}'"
     )
@@ -1110,15 +1100,6 @@ async def modify_gmail_message_labels(
     logger.info(
         f"[modify_gmail_message_labels] Invoked. Email: '{user_google_email}', Message ID: '{message_id}'"
     )
-    
-    # If label IDs are strings, split by comma and strip whitespace
-    if add_label_ids and isinstance(add_label_ids, str):
-        add_label_ids = [s.strip() for s in add_label_ids.split(',') if s.strip()]
-        logger.info(f"[modify_gmail_message_labels] Parsed add_label_ids list from string: {add_label_ids}")
-    
-    if remove_label_ids and isinstance(remove_label_ids, str):
-        remove_label_ids = [s.strip() for s in remove_label_ids.split(',') if s.strip()]
-        logger.info(f"[modify_gmail_message_labels] Parsed remove_label_ids list from string: {remove_label_ids}")
 
     if not add_label_ids and not remove_label_ids:
         raise Exception(
@@ -1150,7 +1131,7 @@ async def modify_gmail_message_labels(
 async def batch_modify_gmail_message_labels(
     service,
     user_google_email: str,
-    message_ids: List[str],
+    message_ids: List[str] = Field(..., description="List of message IDs to modify"),
     add_label_ids: List[str] = Field(default=[], description="Label IDs to add to messages."),
     remove_label_ids: List[str] = Field(default=[], description="Label IDs to remove from messages."),
 ) -> str:
@@ -1169,19 +1150,6 @@ async def batch_modify_gmail_message_labels(
     logger.info(
         f"[batch_modify_gmail_message_labels] Invoked. Email: '{user_google_email}', Message IDs: '{message_ids}'"
     )
-    
-    # If list parameters are strings, split by comma and strip whitespace
-    if message_ids and isinstance(message_ids, str):
-        message_ids = [s.strip() for s in message_ids.split(',') if s.strip()]
-        logger.info(f"[batch_modify_gmail_message_labels] Parsed message_ids list from string: {message_ids}")
-    
-    if add_label_ids and isinstance(add_label_ids, str):
-        add_label_ids = [s.strip() for s in add_label_ids.split(',') if s.strip()]
-        logger.info(f"[batch_modify_gmail_message_labels] Parsed add_label_ids list from string: {add_label_ids}")
-    
-    if remove_label_ids and isinstance(remove_label_ids, str):
-        remove_label_ids = [s.strip() for s in remove_label_ids.split(',') if s.strip()]
-        logger.info(f"[batch_modify_gmail_message_labels] Parsed remove_label_ids list from string: {remove_label_ids}")
 
     if not add_label_ids and not remove_label_ids:
         raise Exception(

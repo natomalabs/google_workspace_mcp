@@ -14,6 +14,7 @@ from typing import List, Optional, Dict, Any, Union
 
 from googleapiclient.errors import HttpError
 from googleapiclient.discovery import build
+from pydantic import Field
 
 from auth.service_decorator import require_google_service
 from core.utils import handle_http_errors
@@ -362,9 +363,9 @@ async def create_event(
     calendar_id: str = "primary",
     description: Optional[str] = None,
     location: Optional[str] = None,
-    attendees: Optional[List[str]] = None,
+    attendees: List[str] = Field(default=[], description="Attendee email addresses"),
     timezone: Optional[str] = None,
-    attachments: Optional[List[str]] = None,
+    attachments: List[str] = Field(default=[], description="Google Drive file URLs or IDs"),
     add_google_meet: bool = False,
     reminders: Optional[Union[str, List[Dict[str, Any]]]] = None,
     use_default_reminders: bool = True,
@@ -393,16 +394,6 @@ async def create_event(
     logger.info(
         f"[create_event] Invoked. Email: '{user_google_email}', Summary: {summary}"
     )
-    logger.info(f"[create_event] Incoming attachments param: {attachments}")
-    # If attachments value is a string, split by comma and strip whitespace
-    if attachments and isinstance(attachments, str):
-        attachments = [a.strip() for a in attachments.split(',') if a.strip()]
-        logger.info(f"[create_event] Parsed attachments list from string: {attachments}")
-    
-    # If attendees value is a string, split by comma and strip whitespace
-    if attendees and isinstance(attendees, str):
-        attendees = [a.strip() for a in attendees.split(',') if a.strip()]
-        logger.info(f"[create_event] Parsed attendees list from string: {attendees}")
     event_body: Dict[str, Any] = {
         "summary": summary,
         "start": (
@@ -574,11 +565,6 @@ async def modify_event(
     logger.info(
         f"[modify_event] Invoked. Email: '{user_google_email}', Event ID: {event_id}"
     )
-    
-    # If attendees value is a string, split by comma and strip whitespace
-    if attendees and isinstance(attendees, str):
-        attendees = [a.strip() for a in attendees.split(',') if a.strip()]
-        logger.info(f"[modify_event] Parsed attendees list from string: {attendees}")
 
     # Build the event body with only the fields that are provided
     event_body: Dict[str, Any] = {}
@@ -604,6 +590,7 @@ async def modify_event(
         event_body["location"] = location
     if attendees is not None:
         event_body["attendees"] = [{"email": email} for email in attendees]
+        logger.info(f"[modify_event] Setting attendees in event_body: {event_body['attendees']}")
     
     # Handle reminders
     if reminders is not None or use_default_reminders is not None:
@@ -666,13 +653,20 @@ async def modify_event(
             "[modify_event] Successfully retrieved existing event before update"
         )
 
-        # Preserve existing fields if not provided in the update
-        _preserve_existing_fields(event_body, existing_event, {
-            "summary": summary,
-            "description": description,
-            "location": location,
-            "attendees": attendees
-        })
+        # Start with the complete existing event to preserve all fields
+        # Then overlay our changes on top
+        full_event_body = existing_event.copy()
+        
+        logger.info(f"[modify_event] Existing event attendees: {existing_event.get('attendees', 'NO ATTENDEES FIELD')}")
+        logger.info(f"[modify_event] Update event_body attendees: {event_body.get('attendees', 'NO ATTENDEES FIELD')}")
+        
+        # Apply the updates from event_body
+        full_event_body.update(event_body)
+        
+        logger.info(f"[modify_event] Merged event_body attendees: {full_event_body.get('attendees', 'NO ATTENDEES FIELD')}")
+        
+        # Use the merged event body for the update
+        event_body = full_event_body
 
         # Handle Google Meet conference data
         if add_google_meet is not None:
@@ -692,10 +686,6 @@ async def modify_event(
                 # Remove Google Meet by setting conferenceData to empty
                 event_body["conferenceData"] = {}
                 logger.info("[modify_event] Removing Google Meet conference")
-        elif 'conferenceData' in existing_event:
-            # Preserve existing conference data if not specified
-            event_body["conferenceData"] = existing_event["conferenceData"]
-            logger.info("[modify_event] Preserving existing conference data")
 
     except HttpError as get_error:
         if get_error.resp.status == 404:
