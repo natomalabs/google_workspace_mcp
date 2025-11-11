@@ -590,6 +590,7 @@ async def modify_event(
         event_body["location"] = location
     if attendees is not None:
         event_body["attendees"] = [{"email": email} for email in attendees]
+        logger.info(f"[modify_event] Setting attendees in event_body: {event_body['attendees']}")
     
     # Handle reminders
     if reminders is not None or use_default_reminders is not None:
@@ -656,8 +657,13 @@ async def modify_event(
         # Then overlay our changes on top
         full_event_body = existing_event.copy()
         
+        logger.info(f"[modify_event] Existing event attendees: {existing_event.get('attendees', 'NO ATTENDEES FIELD')}")
+        logger.info(f"[modify_event] Update event_body attendees: {event_body.get('attendees', 'NO ATTENDEES FIELD')}")
+        
         # Apply the updates from event_body
         full_event_body.update(event_body)
+        
+        logger.info(f"[modify_event] Merged event_body attendees: {full_event_body.get('attendees', 'NO ATTENDEES FIELD')}")
         
         # Use the merged event body for the update
         event_body = full_event_body
