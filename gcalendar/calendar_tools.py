@@ -652,13 +652,15 @@ async def modify_event(
             "[modify_event] Successfully retrieved existing event before update"
         )
 
-        # Preserve existing fields if not provided in the update
-        # Note: attendees is already handled above (line 591-592), don't pass it here
-        _preserve_existing_fields(event_body, existing_event, {
-            "summary": summary,
-            "description": description,
-            "location": location
-        })
+        # Start with the complete existing event to preserve all fields
+        # Then overlay our changes on top
+        full_event_body = existing_event.copy()
+        
+        # Apply the updates from event_body
+        full_event_body.update(event_body)
+        
+        # Use the merged event body for the update
+        event_body = full_event_body
 
         # Handle Google Meet conference data
         if add_google_meet is not None:
@@ -678,10 +680,6 @@ async def modify_event(
                 # Remove Google Meet by setting conferenceData to empty
                 event_body["conferenceData"] = {}
                 logger.info("[modify_event] Removing Google Meet conference")
-        elif 'conferenceData' in existing_event:
-            # Preserve existing conference data if not specified
-            event_body["conferenceData"] = existing_event["conferenceData"]
-            logger.info("[modify_event] Preserving existing conference data")
 
     except HttpError as get_error:
         if get_error.resp.status == 404:
