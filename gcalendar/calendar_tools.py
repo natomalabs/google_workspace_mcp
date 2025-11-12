@@ -782,3 +782,360 @@ async def delete_event(service, user_google_email: str, event_id: str, calendar_
     return confirmation_message
 
 
+def _get_calendar_timezone(service, calendar_id: str) -> Optional[str]:
+    """
+    Helper function to get a calendar's timezone.
+    Not exposed as an MCP tool - used internally for enriching responses.
+    
+    Args:
+        service: Calendar service instance
+        calendar_id: Calendar ID to query
+        
+    Returns:
+        Timezone string (e.g., "America/Los_Angeles") or None if unavailable
+    """
+    try:
+        calendar = service.calendars().get(calendarId=calendar_id).execute()
+        return calendar.get('timeZone')
+    except Exception as e:
+        logger.debug(f"[_get_calendar_timezone] Could not fetch timezone for {calendar_id}: {e}")
+        return None
+
+
+def _merge_busy_intervals(busy_periods: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """
+    Merges overlapping and abutting busy time intervals.
+    
+    Args:
+        busy_periods: List of dicts with 'start' and 'end' ISO datetime strings
+        
+    Returns:
+        List of merged busy periods, sorted by start time
+    """
+    if not busy_periods:
+        return []
+    
+    # Sort by start time
+    sorted_periods = sorted(busy_periods, key=lambda x: x['start'])
+    merged = [sorted_periods[0]]
+    
+    for current in sorted_periods[1:]:
+        last_merged = merged[-1]
+        # Check if current overlaps or abuts with last merged interval
+        # Abutting means end of one equals start of another
+        if current['start'] <= last_merged['end']:
+            # Merge by extending the end time if needed
+            if current['end'] > last_merged['end']:
+                last_merged['end'] = current['end']
+        else:
+            # No overlap or abutting, add as new interval
+            merged.append(current)
+    
+    return merged
+
+
+def _is_slot_in_business_hours(
+    slot: Dict[str, str],
+    user_timezones: Dict[str, str],
+    min_hour: int = 8,
+    max_hour: int = 19
+) -> bool:
+    """
+    Checks if a slot falls within business hours for ALL users.
+    
+    Args:
+        slot: Slot with 'start' and 'end' times
+        user_timezones: Dict mapping identity to timezone string
+        min_hour: Minimum hour (local time) for meetings (default: 8am)
+        max_hour: Maximum hour (local time) for meetings (default: 7pm)
+        
+    Returns:
+        True if slot is within business hours for all users
+    """
+    from dateutil import parser
+    import pytz
+    
+    slot_start = parser.isoparse(slot['start'])
+    
+    for identity, tz_name in user_timezones.items():
+        try:
+            tz = pytz.timezone(tz_name)
+            local_time = slot_start.astimezone(tz)
+            hour = local_time.hour
+            
+            # Check if within business hours for this user
+            if hour < min_hour or hour >= max_hour:
+                logger.debug(
+                    f"[business_hours_filter] Slot {slot['start']} is at {hour}:00 "
+                    f"local time for {identity} (timezone: {tz_name}), outside {min_hour}-{max_hour}"
+                )
+                return False
+        except Exception as e:
+            logger.warning(f"[business_hours_filter] Error checking timezone for {identity}: {e}")
+            # If we can't check, err on the side of caution and exclude
+            return False
+    
+    return True
+
+
+def _compute_free_slots(
+    time_min: str,
+    time_max: str,
+    duration_minutes: int,
+    busy_periods: List[Dict[str, str]],
+    timezone: str
+) -> List[Dict[str, str]]:
+    """
+    Computes free time slots of specified duration within a time range.
+    
+    Args:
+        time_min: Start of range (ISO 8601 datetime string)
+        time_max: End of range (ISO 8601 datetime string)
+        duration_minutes: Desired slot duration in minutes
+        busy_periods: List of busy intervals (already merged)
+        timezone: Timezone for calculations
+        
+    Returns:
+        List of free slots with 'start' and 'end' times
+    """
+    from dateutil import parser
+    from datetime import timedelta
+    import pytz
+    
+    # Parse time range - convert to target timezone if needed
+    start_dt = parser.isoparse(time_min)
+    end_dt = parser.isoparse(time_max)
+    duration = timedelta(minutes=duration_minutes)
+    
+    # Ensure timezone awareness
+    tz = pytz.timezone(timezone)
+    if start_dt.tzinfo is None:
+        start_dt = tz.localize(start_dt)
+    else:
+        start_dt = start_dt.astimezone(tz)
+    if end_dt.tzinfo is None:
+        end_dt = tz.localize(end_dt)
+    else:
+        end_dt = end_dt.astimezone(tz)
+    
+    # Parse busy periods and convert to target timezone
+    busy_intervals = []
+    for period in busy_periods:
+        busy_start = parser.isoparse(period['start'])
+        busy_end = parser.isoparse(period['end'])
+        if busy_start.tzinfo is None:
+            busy_start = tz.localize(busy_start)
+        else:
+            busy_start = busy_start.astimezone(tz)
+        if busy_end.tzinfo is None:
+            busy_end = tz.localize(busy_end)
+        else:
+            busy_end = busy_end.astimezone(tz)
+        busy_intervals.append((busy_start, busy_end))
+    
+    # Generate free slots by stepping through time range intelligently
+    free_slots = []
+    current = start_dt
+    
+    while current + duration <= end_dt:
+        slot_end = current + duration
+        
+        # Find any busy period that overlaps with this potential slot
+        conflicting_busy = None
+        for busy_start, busy_end in busy_intervals:
+            # Check for overlap: slot overlaps busy if slot_start < busy_end AND slot_end > busy_start
+            if current < busy_end and slot_end > busy_start:
+                conflicting_busy = (busy_start, busy_end)
+                break
+        
+        if conflicting_busy is None:
+            # Slot is free - add it and step forward by duration
+            free_slots.append({
+                'start': current.isoformat(),
+                'end': slot_end.isoformat()
+            })
+            current = slot_end
+        else:
+            # Slot conflicts with a busy period
+            # Jump to the end of the busy period to find the next possible slot
+            current = conflicting_busy[1]
+    
+    return free_slots
+
+
+@server.tool()
+@handle_http_errors("find_free_timeslots", is_read_only=True, service_type="calendar")
+@require_google_service("calendar", "calendar_read")
+async def find_free_timeslots(
+    service,
+    user_google_email: str,
+    identities: List[str],
+    time_min: str,
+    time_max: str,
+    duration_minutes: int,
+    timezone: str = "UTC",
+    business_hours_only: bool = True
+) -> str:
+    """
+    Finds available time slots when one or more users are free for meetings or events.
+    
+    Queries Google Calendar free/busy information and returns time slots of a specified 
+    duration within a time range. By default, only returns slots during reasonable business 
+    hours (8am-7pm in each participant's local timezone) to avoid suggesting early morning 
+    or late evening meetings. Set business_hours_only=False to include all available hours.
+    
+    Useful for scheduling meetings across multiple participants, finding availability without 
+    seeing private event details, or suggesting meeting times that respect work-life boundaries. 
+    Returns per-user results with available slots or error information if a calendar is inaccessible.
+
+    Args:
+        user_google_email (str): The authenticated user's Google email address. Required.
+        identities (List[str]): Calendar identities (email addresses or calendar IDs) to check for availability.
+        time_min (str): Start of the time range in RFC3339/ISO 8601 format (e.g., '2025-11-11T09:00:00-05:00' or '2025-11-11T09:00:00Z').
+        time_max (str): End of the time range in RFC3339/ISO 8601 format.
+        duration_minutes (int): Desired duration for each time slot in minutes (e.g., 30 for 30-minute slots).
+        timezone (str): Timezone for the results (e.g., 'America/New_York', 'UTC'). Defaults to 'UTC'.
+        business_hours_only (bool): If True, filters slots to reasonable meeting hours (8am-7pm) in each participant's local timezone. 
+                                     Defaults to True. Set to False to include early morning or late evening slots. Requires user_timezone data to be available.
+
+    Returns:
+        str: JSON string with per-identity results. 
+             Success: {"email@example.com": {"slots": [{"start": "...", "end": "..."}], "user_timezone": "America/Los_Angeles"}}
+             Failure: {"email@example.com": {"error": {"code": 404, "type": "notFound", "message": "..."}}}
+             Note: user_timezone is included when available to help determine appropriate meeting times for each participant.
+    """
+    logger.info(
+        f"[find_free_timeslots] Invoked. Email: '{user_google_email}', Identities: {identities}, "
+        f"Range: {time_min} to {time_max}, Duration: {duration_minutes}min, Timezone: {timezone}"
+    )
+    
+    # Format and validate time parameters
+    formatted_time_min = _correct_time_format_for_api(time_min, "time_min")
+    formatted_time_max = _correct_time_format_for_api(time_max, "time_max")
+    
+    # Build FreeBusy API request body
+    request_body = {
+        "timeMin": formatted_time_min,
+        "timeMax": formatted_time_max,
+        "timeZone": timezone,
+        "items": [{"id": identity} for identity in identities]
+    }
+    
+    logger.info(f"[find_free_timeslots] Calling FreeBusy API with {len(identities)} identities")
+    
+    # Call the FreeBusy API
+    try:
+        freebusy_response = await asyncio.to_thread(
+            lambda: service.freebusy().query(body=request_body).execute()
+        )
+    except HttpError as e:
+        logger.error(f"[find_free_timeslots] FreeBusy API call failed: {e}")
+        raise
+    
+    logger.info(f"[find_free_timeslots] FreeBusy API response received")
+    
+    # Fetch user timezones for context (helps LLM reason about appropriate meeting times)
+    user_timezones = {}
+    for identity in identities:
+        tz = await asyncio.to_thread(lambda id=identity: _get_calendar_timezone(service, id))
+        if tz:
+            user_timezones[identity] = tz
+            logger.info(f"[find_free_timeslots] {identity} timezone: {tz}")
+    
+    # Process results for each identity
+    results = {}
+    calendars_data = freebusy_response.get("calendars", {})
+    
+    for identity in identities:
+        calendar_data = calendars_data.get(identity)
+        
+        if not calendar_data:
+            # Calendar not found in response
+            results[identity] = {
+                "error": {
+                    "code": 404,
+                    "type": "notFound",
+                    "message": f"Calendar '{identity}' not found or not accessible"
+                }
+            }
+            logger.warning(f"[find_free_timeslots] Calendar not found: {identity}")
+            continue
+        
+        # Check for errors in calendar data
+        errors = calendar_data.get("errors", [])
+        if errors:
+            error = errors[0]  # Take first error
+            error_reason = error.get("reason", "unknown")
+            error_domain = error.get("domain", "calendar")
+            
+            # Map error reasons to appropriate HTTP codes
+            error_code = 500
+            error_type = error_reason
+            if error_reason == "notFound":
+                error_code = 404
+            elif error_reason in ["groupTooBig", "tooManyCalendarsRequested"]:
+                error_code = 400
+            
+            results[identity] = {
+                "error": {
+                    "code": error_code,
+                    "type": error_type,
+                    "message": f"Error accessing calendar '{identity}': {error_reason}"
+                }
+            }
+            logger.warning(f"[find_free_timeslots] Error for calendar {identity}: {error_reason}")
+            continue
+        
+        # Get busy periods
+        busy_periods = calendar_data.get("busy", [])
+        logger.info(f"[find_free_timeslots] Calendar {identity} has {len(busy_periods)} busy periods")
+        
+        # Merge overlapping/abutting busy intervals
+        merged_busy = _merge_busy_intervals(busy_periods)
+        logger.info(f"[find_free_timeslots] After merging: {len(merged_busy)} busy periods for {identity}")
+        
+        # Compute free slots
+        free_slots = _compute_free_slots(
+            formatted_time_min,
+            formatted_time_max,
+            duration_minutes,
+            merged_busy,
+            timezone
+        )
+        
+        logger.info(f"[find_free_timeslots] Found {len(free_slots)} free slots for {identity} (before filtering)")
+        
+        # Add timezone metadata to help LLM reason about appropriate meeting times
+        result = {"slots": free_slots}
+        if identity in user_timezones:
+            result["user_timezone"] = user_timezones[identity]
+        
+        results[identity] = result
+    
+    # Apply business hours filtering if requested
+    if business_hours_only and user_timezones:
+        logger.info(f"[find_free_timeslots] Applying business hours filter (8am-7pm local time for all participants)")
+        
+        for identity in identities:
+            result = results.get(identity)
+            if result and "slots" in result:
+                original_count = len(result["slots"])
+                
+                # Filter slots to only those within business hours for ALL users
+                filtered_slots = [
+                    slot for slot in result["slots"]
+                    if _is_slot_in_business_hours(slot, user_timezones)
+                ]
+                
+                result["slots"] = filtered_slots
+                logger.info(
+                    f"[find_free_timeslots] {identity}: {original_count} slots -> "
+                    f"{len(filtered_slots)} slots after business hours filter"
+                )
+    
+    # Return as JSON string
+    output = json.dumps(results, indent=2)
+    logger.info(f"[find_free_timeslots] Successfully completed for {len(identities)} identities")
+    return output
+
+
