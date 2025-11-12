@@ -23,6 +23,8 @@ dependencies = [
  "cachetools>=5.3.0",
  "cryptography>=41.0.0",
  "python-dotenv>=1.1.0",
+ "python-dateutil>=2.8.2",
+ "pytz>=2024.1",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

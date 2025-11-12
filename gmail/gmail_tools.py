@@ -396,8 +396,8 @@ async def get_gmail_message_content(
 @require_google_service("gmail", "gmail_read")
 async def get_gmail_messages_content_batch(
     service,
+    user_google_email: str,    
     message_ids: List[str] = Field(..., description="List of Gmail message IDs to retrieve (max 25 per batch)"),
-    user_google_email: str,
     format: Literal["full", "metadata"] = "full",
 ) -> str:
     """
@@ -844,8 +844,8 @@ async def get_gmail_thread_content(
 @handle_http_errors("get_gmail_threads_content_batch", is_read_only=True, service_type="gmail")
 async def get_gmail_threads_content_batch(
     service,
+    user_google_email: str,    
     thread_ids: List[str] = Field(..., description="List of Gmail thread IDs to retrieve"),
-    user_google_email: str,
 ) -> str:
     """
     Retrieves the content of multiple Gmail threads in a single batch request.

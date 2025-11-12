@@ -782,6 +782,26 @@ async def delete_event(service, user_google_email: str, event_id: str, calendar_
     return confirmation_message
 
 
+def _get_calendar_timezone(service, calendar_id: str) -> Optional[str]:
+    """
+    Helper function to get a calendar's timezone.
+    Not exposed as an MCP tool - used internally for enriching responses.
+    
+    Args:
+        service: Calendar service instance
+        calendar_id: Calendar ID to query
+        
+    Returns:
+        Timezone string (e.g., "America/Los_Angeles") or None if unavailable
+    """
+    try:
+        calendar = service.calendars().get(calendarId=calendar_id).execute()
+        return calendar.get('timeZone')
+    except Exception as e:
+        logger.debug(f"[_get_calendar_timezone] Could not fetch timezone for {calendar_id}: {e}")
+        return None
+
+
 def _merge_busy_intervals(busy_periods: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """
     Merges overlapping and abutting busy time intervals.
@@ -812,6 +832,50 @@ def _merge_busy_intervals(busy_periods: List[Dict[str, str]]) -> List[Dict[str, 
             merged.append(current)
     
     return merged
+
+
+def _is_slot_in_business_hours(
+    slot: Dict[str, str],
+    user_timezones: Dict[str, str],
+    min_hour: int = 8,
+    max_hour: int = 19
+) -> bool:
+    """
+    Checks if a slot falls within business hours for ALL users.
+    
+    Args:
+        slot: Slot with 'start' and 'end' times
+        user_timezones: Dict mapping identity to timezone string
+        min_hour: Minimum hour (local time) for meetings (default: 8am)
+        max_hour: Maximum hour (local time) for meetings (default: 7pm)
+        
+    Returns:
+        True if slot is within business hours for all users
+    """
+    from dateutil import parser
+    import pytz
+    
+    slot_start = parser.isoparse(slot['start'])
+    
+    for identity, tz_name in user_timezones.items():
+        try:
+            tz = pytz.timezone(tz_name)
+            local_time = slot_start.astimezone(tz)
+            hour = local_time.hour
+            
+            # Check if within business hours for this user
+            if hour < min_hour or hour >= max_hour:
+                logger.debug(
+                    f"[business_hours_filter] Slot {slot['start']} is at {hour}:00 "
+                    f"local time for {identity} (timezone: {tz_name}), outside {min_hour}-{max_hour}"
+                )
+                return False
+        except Exception as e:
+            logger.warning(f"[business_hours_filter] Error checking timezone for {identity}: {e}")
+            # If we can't check, err on the side of caution and exclude
+            return False
+    
+    return True
 
 
 def _compute_free_slots(
@@ -909,14 +973,19 @@ async def find_free_timeslots(
     time_min: str,
     time_max: str,
     duration_minutes: int,
-    timezone: str = "UTC"
+    timezone: str = "UTC",
+    business_hours_only: bool = True
 ) -> str:
     """
     Finds available time slots when one or more users are free for meetings or events.
     
     Queries Google Calendar free/busy information and returns time slots of a specified 
-    duration within a time range. Useful for scheduling meetings across multiple participants, 
-    finding availability without seeing private event details, or suggesting meeting times. 
+    duration within a time range. By default, only returns slots during reasonable business 
+    hours (8am-7pm in each participant's local timezone) to avoid suggesting early morning 
+    or late evening meetings. Set business_hours_only=False to include all available hours.
+    
+    Useful for scheduling meetings across multiple participants, finding availability without 
+    seeing private event details, or suggesting meeting times that respect work-life boundaries. 
     Returns per-user results with available slots or error information if a calendar is inaccessible.
 
     Args:
@@ -926,11 +995,14 @@ async def find_free_timeslots(
         time_max (str): End of the time range in RFC3339/ISO 8601 format.
         duration_minutes (int): Desired duration for each time slot in minutes (e.g., 30 for 30-minute slots).
         timezone (str): Timezone for the results (e.g., 'America/New_York', 'UTC'). Defaults to 'UTC'.
+        business_hours_only (bool): If True, filters slots to reasonable meeting hours (8am-7pm) in each participant's local timezone. 
+                                     Defaults to True. Set to False to include early morning or late evening slots. Requires user_timezone data to be available.
 
     Returns:
         str: JSON string with per-identity results. 
-             Success: {"email@example.com": {"slots": [{"start": "...", "end": "..."}]}}
+             Success: {"email@example.com": {"slots": [{"start": "...", "end": "..."}], "user_timezone": "America/Los_Angeles"}}
              Failure: {"email@example.com": {"error": {"code": 404, "type": "notFound", "message": "..."}}}
+             Note: user_timezone is included when available to help determine appropriate meeting times for each participant.
     """
     logger.info(
         f"[find_free_timeslots] Invoked. Email: '{user_google_email}', Identities: {identities}, "
@@ -961,6 +1033,14 @@ async def find_free_timeslots(
         raise
     
     logger.info(f"[find_free_timeslots] FreeBusy API response received")
+    
+    # Fetch user timezones for context (helps LLM reason about appropriate meeting times)
+    user_timezones = {}
+    for identity in identities:
+        tz = await asyncio.to_thread(lambda id=identity: _get_calendar_timezone(service, id))
+        if tz:
+            user_timezones[identity] = tz
+            logger.info(f"[find_free_timeslots] {identity} timezone: {tz}")
     
     # Process results for each identity
     results = {}
@@ -1023,8 +1103,35 @@ async def find_free_timeslots(
             timezone
         )
         
-        results[identity] = {"slots": free_slots}
-        logger.info(f"[find_free_timeslots] Found {len(free_slots)} free slots for {identity}")
+        logger.info(f"[find_free_timeslots] Found {len(free_slots)} free slots for {identity} (before filtering)")
+        
+        # Add timezone metadata to help LLM reason about appropriate meeting times
+        result = {"slots": free_slots}
+        if identity in user_timezones:
+            result["user_timezone"] = user_timezones[identity]
+        
+        results[identity] = result
+    
+    # Apply business hours filtering if requested
+    if business_hours_only and user_timezones:
+        logger.info(f"[find_free_timeslots] Applying business hours filter (8am-7pm local time for all participants)")
+        
+        for identity in identities:
+            result = results.get(identity)
+            if result and "slots" in result:
+                original_count = len(result["slots"])
+                
+                # Filter slots to only those within business hours for ALL users
+                filtered_slots = [
+                    slot for slot in result["slots"]
+                    if _is_slot_in_business_hours(slot, user_timezones)
+                ]
+                
+                result["slots"] = filtered_slots
+                logger.info(
+                    f"[find_free_timeslots] {identity}: {original_count} slots -> "
+                    f"{len(filtered_slots)} slots after business hours filter"
+                )
     
     # Return as JSON string
     output = json.dumps(results, indent=2)
