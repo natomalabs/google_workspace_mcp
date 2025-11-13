@@ -47,6 +47,28 @@ class SecureFastMCP(FastMCP):
         # Session Management - extracts session info for MCP context
         app.user_middleware.insert(0, session_middleware)
 
+        # Add global exception handler to prevent invalid MCP responses
+        # Note: This handler only catches exceptions that aren't already handled by FastMCP
+        @app.exception_handler(Exception)
+        async def global_exception_handler(request: Request, exc: Exception):
+            """Handle exceptions globally to prevent invalid MCP protocol responses."""
+            # Log the error
+            logger.error(f"Unhandled exception in request {request.method} {request.url.path}: {exc}", exc_info=True)
+
+            # For MCP protocol paths, let FastMCP handle the error
+            # FastMCP will ensure proper MCP protocol compliance
+            if request.url.path.startswith("/mcp"):
+                # Re-raise to let FastMCP's error handling take over
+                # FastMCP should handle this properly with valid request IDs
+                raise exc
+
+            # For non-MCP paths, return a proper HTTP error response
+            from starlette.responses import JSONResponse
+            return JSONResponse(
+                {"error": str(exc)},
+                status_code=500
+            )
+
         # Rebuild middleware stack
         app.middleware_stack = app.build_middleware_stack()
         logger.info("Added middleware stack: Session Management")
@@ -98,7 +120,7 @@ def configure_server_for_http():
                 "OAuth 2.1 requires FastMCP 2.11.1+ with RemoteAuthProvider support. "
                 "Please reinstall dependencies using 'uv sync --frozen'."
             )
-        
+
         logger.info("OAuth 2.1 enabled with automatic OAuth 2.0 fallback for legacy clients")
         try:
             _auth_provider = GoogleRemoteAuthProvider()
@@ -220,4 +242,3 @@ async def start_google_auth(service_name: str, user_google_email: str = USER_GOO
     except Exception as e:
         logger.error(f"Failed to start Google authentication flow: {e}", exc_info=True)
         return f"**Error:** An unexpected error occurred: {e}"
-
