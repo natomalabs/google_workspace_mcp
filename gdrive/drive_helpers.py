@@ -108,3 +108,79 @@ def build_drive_list_params(
         list_params["corpora"] = corpora
 
     return list_params
+
+# --- Shortcut resolution helpers ---
+
+import asyncio
+from typing import Tuple
+
+SHORTCUT_MIME_TYPE = "application/vnd.google-apps.shortcut"
+FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+
+BASE_SHORTCUT_FIELDS = (
+    "id, mimeType, parents, shortcutDetails(targetId, targetMimeType)"
+)
+
+
+async def resolve_drive_item(
+    service,
+    file_id: str,
+    *,
+    extra_fields: Optional[str] = None,
+    max_depth: int = 5,
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Resolve a Drive shortcut so downstream callers operate on the real item.
+
+    Returns the resolved file ID and its metadata. Raises if shortcut targets loop
+    or exceed max_depth to avoid infinite recursion.
+    """
+    current_id = file_id
+    depth = 0
+    fields = BASE_SHORTCUT_FIELDS
+    if extra_fields:
+        fields = f"{fields}, {extra_fields}"
+
+    while True:
+        metadata = await asyncio.to_thread(
+            service.files()
+            .get(fileId=current_id, fields=fields, supportsAllDrives=True)
+            .execute
+        )
+        mime_type = metadata.get("mimeType")
+        if mime_type != SHORTCUT_MIME_TYPE:
+            return current_id, metadata
+
+        shortcut_details = metadata.get("shortcutDetails") or {}
+        target_id = shortcut_details.get("targetId")
+        if not target_id:
+            raise Exception(f"Shortcut '{current_id}' is missing target details.")
+
+        depth += 1
+        if depth > max_depth:
+            raise Exception(
+                f"Shortcut resolution exceeded {max_depth} hops starting from '{file_id}'."
+            )
+        current_id = target_id
+
+
+async def resolve_folder_id(
+    service,
+    folder_id: str,
+    *,
+    max_depth: int = 5,
+) -> str:
+    """
+    Resolve a folder ID that might be a shortcut and ensure the final target is a folder.
+    """
+    resolved_id, metadata = await resolve_drive_item(
+        service,
+        folder_id,
+        max_depth=max_depth,
+    )
+    mime_type = metadata.get("mimeType")
+    if mime_type != FOLDER_MIME_TYPE:
+        raise Exception(
+            f"Resolved ID '{resolved_id}' (from '{folder_id}') is not a folder; mimeType={mime_type}."
+        )
+    return resolved_id
