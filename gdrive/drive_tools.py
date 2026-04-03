@@ -494,3 +494,72 @@ async def check_drive_file_public_access(
         ])
     
     return "\n".join(output_parts)
+
+@server.tool()
+@handle_http_errors("copy_drive_file", is_read_only=False, service_type="drive")
+@require_google_service("drive", "drive_file")
+async def copy_drive_file(
+    service,
+    user_google_email: str,
+    file_id: str,
+    new_name: Optional[str] = None,
+    parent_folder_id: str = "root",
+) -> str:
+    """
+    Creates a copy of an existing Google Drive file, preserving all formatting and content.
+
+    Ideal for copying template documents (Docs, Sheets, Slides) before filling in content.
+    Supports shortcuts — if file_id or parent_folder_id is a Drive shortcut, it will be
+    resolved to the real target automatically.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        file_id (str): The ID of the file to copy. Required.
+        new_name (Optional[str]): Name for the copied file. Defaults to "Copy of [original name]".
+        parent_folder_id (str): Folder ID where the copy will be created. Defaults to 'root' (My Drive).
+
+    Returns:
+        str: Confirmation message with the new file's ID and link.
+    """
+    from gdrive.drive_helpers import resolve_drive_item, resolve_folder_id
+
+    logger.info(
+        f"[copy_drive_file] Invoked. Email: '{user_google_email}', File ID: '{file_id}', "
+        f"New name: '{new_name}', Parent folder: '{parent_folder_id}'"
+    )
+
+    resolved_file_id, file_metadata = await resolve_drive_item(
+        service, file_id, extra_fields="name, webViewLink, mimeType"
+    )
+    original_name = file_metadata.get("name", "Unknown File")
+
+    resolved_folder_id = await resolve_folder_id(service, parent_folder_id)
+
+    copy_body: dict = {"name": new_name if new_name else f"Copy of {original_name}"}
+    if resolved_folder_id != "root":
+        copy_body["parents"] = [resolved_folder_id]
+
+    copied_file = await asyncio.to_thread(
+        service.files()
+        .copy(
+            fileId=resolved_file_id,
+            body=copy_body,
+            supportsAllDrives=True,
+            fields="id, name, webViewLink, mimeType",
+        )
+        .execute
+    )
+
+    output_parts = [
+        f"Successfully copied '{original_name}'",
+        "",
+        f"Original file ID: {file_id}",
+        f"New file ID: {copied_file.get('id', 'N/A')}",
+        f"New file name: {copied_file.get('name', 'Unknown')}",
+        f"File type: {copied_file.get('mimeType', 'Unknown')}",
+        f"Location folder: {parent_folder_id}",
+        "",
+        f"View copied file: {copied_file.get('webViewLink', 'N/A')}",
+    ]
+
+    return "\n".join(output_parts)
