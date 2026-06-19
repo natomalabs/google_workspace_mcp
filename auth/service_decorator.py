@@ -288,26 +288,45 @@ def _extract_oauth21_user_email(authenticated_user: Optional[str], func_name: st
 def _extract_oauth20_user_email(
     args: tuple,
     kwargs: dict,
-    wrapper_sig: inspect.Signature
+    wrapper_sig: inspect.Signature,
+    authenticated_user: Optional[str] = None,
 ) -> str:
     """
     Extract user email for OAuth 2.0 mode from function arguments.
+
+    If authenticated_user is present (e.g. resolved from a Bearer token or env
+    credentials), it is authoritative: the caller-supplied user_google_email is
+    ignored to prevent IDOR / account-takeover via caller-controlled input.
 
     Args:
         args: Positional arguments passed to wrapper
         kwargs: Keyword arguments passed to wrapper
         wrapper_sig: Function signature for parameter binding
+        authenticated_user: Verified user email from session context, if any
 
     Returns:
         User email string
 
     Raises:
-        Exception: If user_google_email parameter not found
+        Exception: If user_google_email parameter not found and no authenticated user
     """
     bound_args = wrapper_sig.bind(*args, **kwargs)
     bound_args.apply_defaults()
 
     user_google_email = bound_args.arguments.get("user_google_email")
+
+    # If a verified authenticated user is available, always use it.
+    # Reject any caller-supplied value that differs to prevent IDOR.
+    if authenticated_user:
+        if user_google_email and user_google_email != authenticated_user:
+            logger.warning(
+                "[security] Caller-supplied user_google_email '%s' does not match "
+                "authenticated user '%s' — using authenticated user.",
+                user_google_email,
+                authenticated_user,
+            )
+        return authenticated_user
+
     if not user_google_email:
         raise Exception(
             "'user_google_email' parameter is required but was not found."
@@ -527,7 +546,7 @@ def require_google_service(
             if is_oauth21_enabled():
                 user_google_email = _extract_oauth21_user_email(authenticated_user, func.__name__)
             else:
-                user_google_email = _extract_oauth20_user_email(args, kwargs, wrapper_sig)
+                user_google_email = _extract_oauth20_user_email(args, kwargs, wrapper_sig, authenticated_user)
 
             # Get service configuration from the decorator's arguments
             if service_type not in SERVICE_CONFIGS:
@@ -659,21 +678,25 @@ def require_multiple_services(service_configs: List[Dict[str, Any]]):
             if is_oauth21_enabled():
                 user_google_email = _extract_oauth21_user_email(authenticated_user, tool_name)
             else:
-                # OAuth 2.0 mode: extract from arguments (original logic)
-                param_names = list(original_sig.parameters.keys())
-                user_google_email = None
-                if "user_google_email" in kwargs:
-                    user_google_email = kwargs["user_google_email"]
+                # OAuth 2.0 mode: extract from arguments, but enforce authenticated_user
+                # if one is available to prevent IDOR / account-takeover.
+                if authenticated_user:
+                    user_google_email = authenticated_user
                 else:
-                    try:
-                        user_email_index = param_names.index("user_google_email")
-                        if user_email_index < len(args):
-                            user_google_email = args[user_email_index]
-                    except ValueError:
-                        pass
+                    param_names = list(original_sig.parameters.keys())
+                    user_google_email = None
+                    if "user_google_email" in kwargs:
+                        user_google_email = kwargs["user_google_email"]
+                    else:
+                        try:
+                            user_email_index = param_names.index("user_google_email")
+                            if user_email_index < len(args):
+                                user_google_email = args[user_email_index]
+                        except ValueError:
+                            pass
 
-                if not user_google_email:
-                    raise Exception("user_google_email parameter is required but not found")
+                    if not user_google_email:
+                        raise Exception("user_google_email parameter is required but not found")
 
             # Authenticate all services
             for config in service_configs:
