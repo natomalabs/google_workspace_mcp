@@ -678,25 +678,10 @@ def require_multiple_services(service_configs: List[Dict[str, Any]]):
             if is_oauth21_enabled():
                 user_google_email = _extract_oauth21_user_email(authenticated_user, tool_name)
             else:
-                # OAuth 2.0 mode: extract from arguments, but enforce authenticated_user
-                # if one is available to prevent IDOR / account-takeover.
-                if authenticated_user:
-                    user_google_email = authenticated_user
-                else:
-                    param_names = list(original_sig.parameters.keys())
-                    user_google_email = None
-                    if "user_google_email" in kwargs:
-                        user_google_email = kwargs["user_google_email"]
-                    else:
-                        try:
-                            user_email_index = param_names.index("user_google_email")
-                            if user_email_index < len(args):
-                                user_google_email = args[user_email_index]
-                        except ValueError:
-                            pass
-
-                    if not user_google_email:
-                        raise Exception("user_google_email parameter is required but not found")
+                # OAuth 2.0 mode: delegate to the shared helper so authenticated_user
+                # enforcement and mismatch logging are consistent with the single-service path.
+                # wrapper_sig == original_sig in this branch (OAuth 2.0 does not strip params).
+                user_google_email = _extract_oauth20_user_email(args, kwargs, wrapper_sig, authenticated_user)
 
             # Authenticate all services
             for config in service_configs:
