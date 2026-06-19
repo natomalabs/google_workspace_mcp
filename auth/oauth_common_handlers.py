@@ -377,17 +377,17 @@ async def handle_oauth_register(request: Request):
         if not redirect_uris:
             redirect_uris = config.get_redirect_uris()
 
-        # Build the registration response with our pre-configured credentials
+        # Build the registration response with our pre-configured credentials.
+        # client_secret is intentionally omitted — callers use PKCE (no client secret required or issued).
         response_data = {
             "client_id": config.client_id,
-            "client_secret": config.client_secret,
             "client_name": body.get("client_name", "Google Workspace MCP Server"),
             "client_uri": body.get("client_uri", config.base_url),
             "redirect_uris": redirect_uris,
             "grant_types": body.get("grant_types", ["authorization_code", "refresh_token"]),
             "response_types": body.get("response_types", ["code"]),
             "scope": body.get("scope", " ".join(get_current_scopes())),
-            "token_endpoint_auth_method": body.get("token_endpoint_auth_method", "client_secret_basic"),
+            "token_endpoint_auth_method": "none",  # PKCE-only; no client secret issued
             "code_challenge_methods": config.supported_code_challenge_methods,
             # Additional OAuth 2.1 fields
             "client_id_issued_at": int(time.time()),
