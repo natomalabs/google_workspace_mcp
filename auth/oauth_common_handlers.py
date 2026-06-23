@@ -4,7 +4,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
-from urllib.parse import urlencode, parse_qs
+from urllib.parse import urlencode, parse_qs, urlparse
 
 import aiohttp
 import jwt
@@ -15,7 +15,7 @@ from google.oauth2.credentials import Credentials
 
 from auth.oauth21_session_store import store_token_session
 from auth.google_auth import get_credential_store
-from auth.scopes import get_current_scopes
+from auth.scopes import get_current_scopes, BASE_SCOPES
 from auth.oauth_config import get_oauth_config, is_stateless_mode
 from auth.oauth_error_handling import (
     OAuthError, OAuthValidationError, OAuthConfigurationError,
@@ -27,6 +27,15 @@ from auth.oauth_error_handling import (
 logger = logging.getLogger(__name__)
 
 
+def _is_loopback_uri(uri: str) -> bool:
+    """Return True only for http://localhost / http://127.0.0.1 / http://[::1] URIs."""
+    try:
+        p = urlparse(uri)
+        return p.scheme == "http" and p.hostname in ("localhost", "127.0.0.1", "::1")
+    except Exception:
+        return False
+
+
 async def handle_oauth_authorize(request: Request):
     """Common handler for OAuth authorization proxy."""
     origin = request.headers.get("origin")
@@ -35,34 +44,74 @@ async def handle_oauth_authorize(request: Request):
         cors_headers = get_development_cors_headers(origin)
         return JSONResponse(content={}, headers=cors_headers)
 
-    # Get query parameters
+    config = get_oauth_config()
+
+    # Standalone deployments inject GOOGLE_ACCESS_TOKEN directly and never set
+    # GOOGLE_OAUTH_CLIENT_ID, so is_configured() is False and the entire proxy
+    # is disabled.  For OAuth-proxy deployments the secure logic below applies.
+    if not config.is_configured():
+        return create_oauth_error_response(
+            OAuthConfigurationError("OAuth client not configured"), origin)
+
     params = dict(request.query_params)
 
-    # Add our client ID if not provided
-    client_id = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
-    if "client_id" not in params and client_id:
-        params["client_id"] = client_id
+    # Always use the server's client_id — override whatever the caller sent.
+    # This prevents identity-borrowing attacks regardless of request params.
+    params["client_id"] = config.client_id
 
-    # Ensure response_type is code
+    # Require state for CSRF protection.
+    if not params.get("state"):
+        return create_oauth_error_response(
+            OAuthValidationError("state parameter is required", "state"), origin)
+
+    # Restrict redirect_uri to loopback addresses only.
+    # Desktop-type Google OAuth clients accept any http://localhost/* URI without
+    # pre-registration, which allows an attacker to redirect the auth code to
+    # their own listener.
+    redirect_uri = params.get("redirect_uri", "")
+    if redirect_uri and not _is_loopback_uri(redirect_uri):
+        log_security_event("oauth_authorize_invalid_redirect_uri",
+                           {"redirect_uri": redirect_uri}, request)
+        return create_oauth_error_response(
+            OAuthValidationError(
+                "redirect_uri must be a loopback address "
+                "(http://localhost or http://127.0.0.1)",
+                "redirect_uri"),
+            origin)
+
+    # Enforce PKCE when required (OAuth 2.1).  code_challenge binds the
+    # authorization code to the initiating client; an intercepted code cannot
+    # be exchanged without the matching code_verifier.
+    if config.pkce_required:
+        code_challenge = params.get("code_challenge")
+        code_challenge_method = params.get("code_challenge_method", "S256")
+
+        if not code_challenge:
+            return create_oauth_error_response(
+                OAuthValidationError(
+                    "code_challenge is required (PKCE is mandatory)", "code_challenge"),
+                origin)
+
+        if code_challenge_method != "S256":
+            return create_oauth_error_response(
+                OAuthValidationError(
+                    "code_challenge_method must be S256", "code_challenge_method"),
+                origin)
+
+    # No scope escalation — forward only what the client explicitly requested.
+    # The previous merge with get_current_scopes() silently granted every
+    # enabled-tool scope (Gmail, Drive, Calendar …) to any caller.
     params["response_type"] = "code"
-
-    # Merge client scopes with scopes for enabled tools only
-    client_scopes = params.get("scope", "").split() if params.get("scope") else []
-    # Include scopes for enabled tools only (not all tools)
-    enabled_tool_scopes = get_current_scopes()
-    all_scopes = set(client_scopes) | set(enabled_tool_scopes)
-    params["scope"] = " ".join(sorted(all_scopes))
+    if not params.get("scope"):
+        params["scope"] = " ".join(BASE_SCOPES)
     logger.info(f"OAuth 2.1 authorization: Requesting scopes: {params['scope']}")
 
-    # Build Google authorization URL
     google_auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
 
-    # Return redirect with development CORS headers if needed
-    cors_headers = get_development_cors_headers(origin)
     return RedirectResponse(
         url=google_auth_url,
         status_code=302,
-        headers=cors_headers
+        headers=get_development_cors_headers(origin),
     )
 
 
@@ -73,6 +122,14 @@ async def handle_proxy_token_exchange(request: Request):
     if request.method == "OPTIONS":
         cors_headers = get_development_cors_headers(origin)
         return JSONResponse(content={}, headers=cors_headers)
+
+    # Reject immediately if the server's OAuth client is not configured.
+    # Without client credentials there is nothing to proxy securely.
+    config = get_oauth_config()
+    if not config.is_configured():
+        return create_oauth_error_response(
+            OAuthConfigurationError("OAuth client not configured"), origin)
+
     try:
         # Get form data with validation
         try:
@@ -88,25 +145,22 @@ async def handle_proxy_token_exchange(request: Request):
             except Exception as e:
                 raise OAuthValidationError(f"Invalid form data: {e}")
 
-            # Convert to single values and validate
+            # Convert to single values and validate.
+            # When pkce_required=True, code_verifier is mandatory; it is also
+            # forwarded to Google below so Google validates the PKCE binding.
             request_data = {k: v[0] if v else '' for k, v in form_data.items()}
-            validate_token_request(request_data)
+            validate_token_request(request_data, pkce_required=config.pkce_required)
 
-            # Check if client_id is missing (public client)
+            # Inject server credentials for the confidential-client exchange with Google.
             if 'client_id' not in form_data or not form_data['client_id'][0]:
-                client_id = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
-                if client_id:
-                    form_data['client_id'] = [client_id]
-                    logger.debug("Added missing client_id to token request")
+                form_data['client_id'] = [config.client_id]
+                logger.debug("Added missing client_id to token request")
 
-            # Check if client_secret is missing (public client using PKCE)
             if 'client_secret' not in form_data:
-                client_secret = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
-                if client_secret:
-                    form_data['client_secret'] = [client_secret]
-                    logger.debug("Added missing client_secret to token request")
+                form_data['client_secret'] = [config.client_secret]
+                logger.debug("Added missing client_secret to token request")
 
-            # Reconstruct body with added credentials
+            # Reconstruct body (code_verifier is preserved and forwarded to Google)
             body = urlencode(form_data, doseq=True).encode('utf-8')
 
         # Forward request to Google
@@ -140,7 +194,7 @@ async def handle_proxy_token_exchange(request: Request):
                                         response_data["id_token"],
                                         signing_key.key,
                                         algorithms=["RS256"],
-                                        audience=os.getenv("GOOGLE_OAUTH_CLIENT_ID"),
+                                        audience=config.client_id,
                                         issuer="https://accounts.google.com"
                                     )
                                     user_email = id_token_claims.get("email")
@@ -174,8 +228,8 @@ async def handle_proxy_token_exchange(request: Request):
                                             token=response_data["access_token"],
                                             refresh_token=response_data.get("refresh_token"),
                                             token_uri="https://oauth2.googleapis.com/token",
-                                            client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID"),
-                                            client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
+                                            client_id=config.client_id,
+                                            client_secret=config.client_secret,
                                             scopes=response_data.get("scope", "").split() if response_data.get("scope") else None,
                                             expiry=expiry
                                         )
@@ -314,8 +368,8 @@ async def handle_oauth_client_config(request: Request):
         cors_headers = get_development_cors_headers(origin)
         return JSONResponse(content={}, headers=cors_headers)
 
-    client_id = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
-    if not client_id:
+    config = get_oauth_config()
+    if not config.is_configured():
         cors_headers = get_development_cors_headers(origin)
         return JSONResponse(
             status_code=404,
@@ -323,12 +377,9 @@ async def handle_oauth_client_config(request: Request):
             headers=cors_headers
         )
 
-    # Get OAuth configuration
-    config = get_oauth_config()
-
     return JSONResponse(
         content={
-            "client_id": client_id,
+            "client_id": config.client_id,
             "client_name": "Google Workspace MCP Server",
             "client_uri": config.base_url,
             "redirect_uris": [
@@ -337,7 +388,7 @@ async def handle_oauth_client_config(request: Request):
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "scope": " ".join(get_current_scopes()),
-            "token_endpoint_auth_method": "client_secret_basic",
+            "token_endpoint_auth_method": "none",  # PKCE-only; callers never need the server secret
             "code_challenge_methods": config.supported_code_challenge_methods[:1]  # Primary method only
         },
         headers={
@@ -377,17 +428,18 @@ async def handle_oauth_register(request: Request):
         if not redirect_uris:
             redirect_uris = config.get_redirect_uris()
 
-        # Build the registration response with our pre-configured credentials
+        # Build the registration response.
+        # client_secret is intentionally omitted: callers use PKCE for the token
+        # exchange; the server injects the secret internally and must never expose it.
         response_data = {
             "client_id": config.client_id,
-            "client_secret": config.client_secret,
             "client_name": body.get("client_name", "Google Workspace MCP Server"),
             "client_uri": body.get("client_uri", config.base_url),
             "redirect_uris": redirect_uris,
             "grant_types": body.get("grant_types", ["authorization_code", "refresh_token"]),
             "response_types": body.get("response_types", ["code"]),
             "scope": body.get("scope", " ".join(get_current_scopes())),
-            "token_endpoint_auth_method": body.get("token_endpoint_auth_method", "client_secret_basic"),
+            "token_endpoint_auth_method": "none",  # PKCE-only flow; no client secret issued
             "code_challenge_methods": config.supported_code_challenge_methods,
             # Additional OAuth 2.1 fields
             "client_id_issued_at": int(time.time()),
@@ -395,7 +447,7 @@ async def handle_oauth_register(request: Request):
             "registration_client_uri": f"{config.get_oauth_base_url()}/oauth2/register/{config.client_id}"
         }
 
-        logger.info("Dynamic client registration successful - returning pre-configured Google credentials")
+        logger.info("Dynamic client registration successful")
 
         return JSONResponse(
             status_code=201,
