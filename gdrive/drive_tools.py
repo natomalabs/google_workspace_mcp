@@ -9,12 +9,11 @@ from typing import Optional
 
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import io
-import httpx
 
 from auth.service_decorator import require_google_service
 from core.utils import extract_office_xml_text, handle_http_errors
 from core.server import server
-from gdrive.drive_helpers import DRIVE_QUERY_PATTERNS, build_drive_list_params
+from gdrive.drive_helpers import build_drive_list_params
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +26,12 @@ async def search_drive_files(
     query: str,
     page_size: int = 10,
     drive_id: Optional[str] = None,
-    include_items_from_all_drives: bool = True,
+    include_items_from_all_drives: bool = False,
     corpora: Optional[str] = None,
 ) -> str:
     """
-    Searches for files and folders within a user's Google Drive, including shared drives.
+    Searches for files and folders within a user's Google Drive.
+    Set include_items_from_all_drives=True and corpora='drive' to include shared drives.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
@@ -48,18 +48,9 @@ async def search_drive_files(
     """
     logger.info(f"[search_drive_files] Invoked. Email: '{user_google_email}', Query: '{query}'")
 
-    # Check if the query looks like a structured Drive query or free text
-    # Look for Drive API operators and structured query patterns
-    is_structured_query = any(pattern.search(query) for pattern in DRIVE_QUERY_PATTERNS)
-
-    if is_structured_query:
-        final_query = query
-        logger.info(f"[search_drive_files] Using structured query as-is: '{final_query}'")
-    else:
-        # For free text queries, wrap in fullText contains
-        escaped_query = query.replace("'", "\\'")
-        final_query = f"fullText contains '{escaped_query}'"
-        logger.info(f"[search_drive_files] Reformatting free text query '{query}' to '{final_query}'")
+    escaped_query = query.replace("\\", "\\\\").replace("'", "\\'")
+    final_query = f"fullText contains '{escaped_query}'"
+    logger.info(f"[search_drive_files] Reformatting free text query '{query}' to '{final_query}'")
 
     list_params = build_drive_list_params(
         query=final_query,
@@ -184,11 +175,11 @@ async def list_drive_items(
     folder_id: str = 'root',
     page_size: int = 100,
     drive_id: Optional[str] = None,
-    include_items_from_all_drives: bool = True,
+    include_items_from_all_drives: bool = False,
     corpora: Optional[str] = None,
 ) -> str:
     """
-    Lists files and folders, supporting shared drives.
+    Lists files and folders.
     If `drive_id` is specified, lists items within that shared drive. `folder_id` is then relative to that drive (or use drive_id as folder_id for root).
     If `drive_id` is not specified, lists items from user's "My Drive" and accessible shared drives (if `include_items_from_all_drives` is True).
 
@@ -238,47 +229,26 @@ async def create_drive_file(
     service,
     user_google_email: str,
     file_name: str,
-    content: Optional[str] = None,  # Now explicitly Optional
+    content: str,
     folder_id: str = 'root',
     mime_type: str = 'text/plain',
-    fileUrl: Optional[str] = None,  # Now explicitly Optional
 ) -> str:
     """
     Creates a new file in Google Drive, supporting creation within shared drives.
-    Accepts either direct content or a fileUrl to fetch the content from.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
         file_name (str): The name for the new file.
-        content (Optional[str]): If provided, the content to write to the file.
+        content (str): The text content to write to the file.
         folder_id (str): The ID of the parent folder. Defaults to 'root'. For shared drives, this must be a folder ID within the shared drive.
         mime_type (str): The MIME type of the file. Defaults to 'text/plain'.
-        fileUrl (Optional[str]): If provided, fetches the file content from this URL.
 
     Returns:
         str: Confirmation message of the successful file creation with file link.
     """
-    logger.info(f"[create_drive_file] Invoked. Email: '{user_google_email}', File Name: {file_name}, Folder ID: {folder_id}, fileUrl: {fileUrl}")
+    logger.info(f"[create_drive_file] Invoked. Email: '{user_google_email}', File Name: {file_name}, Folder ID: {folder_id}")
 
-    if not content and not fileUrl:
-        raise Exception("You must provide either 'content' or 'fileUrl'.")
-
-    file_data = None
-    # Prefer fileUrl if both are provided
-    if fileUrl:
-        logger.info(f"[create_drive_file] Fetching file from URL: {fileUrl}")
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(fileUrl)
-            if resp.status_code != 200:
-                raise Exception(f"Failed to fetch file from URL: {fileUrl} (status {resp.status_code})")
-            file_data = await resp.aread()
-            # Try to get MIME type from Content-Type header
-            content_type = resp.headers.get("Content-Type")
-            if content_type and content_type != "application/octet-stream":
-                mime_type = content_type
-                logger.info(f"[create_drive_file] Using MIME type from Content-Type header: {mime_type}")
-    elif content:
-        file_data = content.encode('utf-8')
+    file_data = content.encode('utf-8')
 
     file_metadata = {
         'name': file_name,
