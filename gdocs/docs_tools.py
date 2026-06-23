@@ -220,8 +220,14 @@ async def get_doc_content(
         downloader = MediaIoBaseDownload(fh, request_obj)
         loop = asyncio.get_event_loop()
         done = False
+        _MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
         while not done:
             status, done = await loop.run_in_executor(None, downloader.next_chunk)
+            if fh.tell() > _MAX_DOWNLOAD_BYTES:
+                return (
+                    f'[File "{file_name}" (ID: {document_id}) exceeds the '
+                    f'{_MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB download limit and cannot be processed.]'
+                )
 
         file_content_bytes = fh.getvalue()
 
@@ -587,7 +593,7 @@ async def insert_doc_image(
     Args:
         user_google_email: User's Google email address
         document_id: ID of the document to update
-        image_source: Drive file ID or public image URL
+        image_source: Drive file ID (images only — URLs are not accepted)
         index: Position to insert image (0-based)
         width: Image width in points (optional)
         height: Image height in points (optional)
@@ -603,29 +609,29 @@ async def insert_doc_image(
         logger.debug("Adjusting index from 0 to 1 to avoid first section break")
         index = 1
 
-    # Determine if source is a Drive file ID or URL
-    is_drive_file = not (image_source.startswith('http://') or image_source.startswith('https://'))
+    # Determine source — only Drive file IDs are accepted.
+    # URL inputs are rejected: Google's insertInlineImage fetcher would make a
+    # server-side GET to any http/https URI, enabling prompt-injection-driven
+    # exfiltration via attacker-controlled URLs (query/path encoded payload).
+    if image_source.startswith('http://') or image_source.startswith('https://'):
+        return "Error: URL image sources are not supported. Provide a Drive file ID instead."
 
-    if is_drive_file:
-        # Verify Drive file exists and get metadata
-        try:
-            file_metadata = await asyncio.to_thread(
-                drive_service.files().get(
-                    fileId=image_source,
-                    fields="id, name, mimeType"
-                ).execute
-            )
-            mime_type = file_metadata.get('mimeType', '')
-            if not mime_type.startswith('image/'):
-                return f"Error: File {image_source} is not an image (MIME type: {mime_type})."
+    # Verify Drive file exists and get metadata
+    try:
+        file_metadata = await asyncio.to_thread(
+            drive_service.files().get(
+                fileId=image_source,
+                fields="id, name, mimeType"
+            ).execute
+        )
+        mime_type = file_metadata.get('mimeType', '')
+        if not mime_type.startswith('image/'):
+            return f"Error: File {image_source} is not an image (MIME type: {mime_type})."
 
-            image_uri = f"https://drive.google.com/uc?id={image_source}"
-            source_description = f"Drive file {file_metadata.get('name', image_source)}"
-        except Exception as e:
-            return f"Error: Could not access Drive file {image_source}: {str(e)}"
-    else:
-        image_uri = image_source
-        source_description = "URL image"
+        image_uri = f"https://drive.google.com/uc?id={image_source}"
+        source_description = f"Drive file {file_metadata.get('name', image_source)}"
+    except Exception as e:
+        return f"Error: Could not access Drive file {image_source}: {str(e)}"
 
     # Use helper to create image request
     requests = [create_insert_image_request(index, image_uri, width, height)]

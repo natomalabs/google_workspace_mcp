@@ -174,12 +174,13 @@ def validate_scopes(scopes: List[str]) -> None:
             raise OAuthValidationError(f"Invalid scope format: {scope}", "scope")
 
 
-def validate_token_request(request_data: Dict[str, Any]) -> None:
+def validate_token_request(request_data: Dict[str, Any], pkce_required: bool = False) -> None:
     """
     Validate an OAuth token exchange request.
     
     Args:
         request_data: The token request data to validate
+        pkce_required: When True, code_verifier is required for authorization_code grants
         
     Raises:
         OAuthValidationError: If the request is invalid
@@ -198,6 +199,18 @@ def validate_token_request(request_data: Dict[str, Any]) -> None:
         redirect_uri = request_data.get("redirect_uri")
         if redirect_uri:
             validate_redirect_uri(redirect_uri)
+
+        if pkce_required:
+            code_verifier = request_data.get("code_verifier")
+            if not code_verifier:
+                raise OAuthValidationError(
+                    "code_verifier is required (PKCE is mandatory)", "code_verifier")
+            if not (43 <= len(code_verifier) <= 128):
+                raise OAuthValidationError(
+                    "code_verifier length must be 43-128 characters", "code_verifier")
+            if not re.match(r'^[A-Za-z0-9\-._~]+$', code_verifier):
+                raise OAuthValidationError(
+                    "code_verifier contains invalid characters", "code_verifier")
     
     client_id = request_data.get("client_id")
     if client_id:

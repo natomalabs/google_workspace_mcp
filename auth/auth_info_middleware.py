@@ -161,12 +161,11 @@ class AuthInfoMiddleware(Middleware):
                             context.fastmcp_context.set_state("jti", token_payload.get("jti"))
                             context.fastmcp_context.set_state("auth_provider_type", self.auth_provider_type)
                             
-                            # Set the definitive authentication state for JWT tokens
-                            user_email = token_payload.get("email", token_payload.get("username"))
-                            if user_email:
-                                context.fastmcp_context.set_state("authenticated_user_email", user_email)
-                                context.fastmcp_context.set_state("authenticated_via", "jwt_token")
-                            
+                            # Do NOT promote unverified JWT email to authenticated_user_email.
+                            # Only tokens verified by auth_provider.verify_token() (ya29.* path above)
+                            # or FastMCP's RequireAuthMiddleware (request.state.auth) may set that
+                            # context key. An unverified decode disables signature/exp/aud/iss checks,
+                            # making the email claim fully attacker-controlled.
                             logger.debug("JWT token processed successfully")
                             
                         except jwt.DecodeError as e:
@@ -190,32 +189,38 @@ class AuthInfoMiddleware(Middleware):
             transport_mode = get_transport_mode()
             
             if transport_mode == "stdio":
-                # In stdio mode, check if there's a session with credentials
-                # This is ONLY safe in stdio mode because it's single-user
+                # In stdio mode, only trust a caller-supplied user_google_email if the
+                # current MCP session is explicitly bound to that user. Checking merely
+                # whether *any* session exists for the email (has_session) would allow
+                # a caller to supply an arbitrary email and gain another user's context.
                 logger.debug("Checking for stdio mode authentication")
-                
-                # Get the requested user from the context if available
+
                 requested_user = None
                 if hasattr(context, 'request') and hasattr(context.request, 'params'):
                     requested_user = context.request.params.get('user_google_email')
                 elif hasattr(context, 'arguments'):
-                    # FastMCP may store arguments differently
                     requested_user = context.arguments.get('user_google_email')
-                
-                if requested_user:
+
+                mcp_session_id = getattr(context.fastmcp_context, 'session_id', None)
+                if requested_user and mcp_session_id:
                     try:
                         from auth.oauth21_session_store import get_oauth21_session_store
                         store = get_oauth21_session_store()
-                        
-                        # Check if user has a recent session
-                        if store.has_session(requested_user):
-                            logger.debug(f"Using recent stdio session for {requested_user}")
-                            # In stdio mode, we can trust the user has authenticated recently
+
+                        # Trust only if the session ID is explicitly bound to the requested user.
+                        bound_user = store.get_user_by_mcp_session(mcp_session_id)
+                        if bound_user == requested_user:
+                            logger.debug(f"Stdio session verified for {requested_user} via session binding")
                             context.fastmcp_context.set_state("authenticated_user_email", requested_user)
                             context.fastmcp_context.set_state("authenticated_via", "stdio_session")
                             context.fastmcp_context.set_state("auth_provider_type", "oauth21_stdio")
+                        elif bound_user:
+                            logger.warning(
+                                "[security] Stdio requested user '%s' does not match session-bound user '%s' — ignoring.",
+                                requested_user, bound_user,
+                            )
                     except Exception as e:
-                        logger.debug(f"Error checking stdio session: {e}")
+                        logger.debug(f"Error checking stdio session binding: {e}")
             
             # Check for MCP session binding
             if not context.fastmcp_context.get_state("authenticated_user_email") and hasattr(context.fastmcp_context, 'session_id'):
