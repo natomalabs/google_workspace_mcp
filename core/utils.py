@@ -96,6 +96,21 @@ def extract_office_xml_text(file_bytes: bytes, mime_type: str) -> Optional[str]:
 
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+            # --- Zip-bomb guard ---
+            # Layer 1: reject if total uncompressed size across all members exceeds limit.
+            # This reads only central-directory metadata — no decompression occurs.
+            _MAX_TOTAL_UNCOMPRESSED = 100 * 1024 * 1024   # 100 MB
+            _MAX_MEMBER_BYTES       =  20 * 1024 * 1024   #  20 MB per member
+            _MAX_RATIO              = 100                  # 100:1 compression ratio
+
+            total_uncompressed = sum(info.file_size for info in zf.infolist())
+            if total_uncompressed > _MAX_TOTAL_UNCOMPRESSED:
+                logger.warning(
+                    f"Rejecting zip-bomb candidate: total uncompressed size "
+                    f"{total_uncompressed} bytes exceeds {_MAX_TOTAL_UNCOMPRESSED} "
+                    f"(mime_type: {mime_type})"
+                )
+                return None
             targets: List[str] = []
             # Map MIME → iterable of XML files to inspect
             if (
@@ -119,7 +134,27 @@ def extract_office_xml_text(file_bytes: bytes, mime_type: str) -> Optional[str]:
                 ]
                 # Attempt to parse sharedStrings.xml for Excel files
                 try:
-                    shared_strings_xml = zf.read("xl/sharedStrings.xml")
+                    # Layer 2: per-member size + ratio check before decompressing
+                    _ss_name = "xl/sharedStrings.xml"
+                    _ss_info = zf.getinfo(_ss_name)
+                    if _ss_info.file_size > _MAX_MEMBER_BYTES:
+                        logger.warning(
+                            f"Skipping oversized {_ss_name}: {_ss_info.file_size} bytes"
+                        )
+                        raise KeyError(_ss_name)
+                    if _ss_info.compress_size > 0 and (_ss_info.file_size / _ss_info.compress_size) > _MAX_RATIO:
+                        logger.warning(
+                            f"Skipping suspicious {_ss_name}: ratio "
+                            f"{_ss_info.file_size / _ss_info.compress_size:.0f}:1"
+                        )
+                        raise KeyError(_ss_name)
+                    shared_strings_xml = zf.read(_ss_name)
+                    # Layer 3: post-read backstop (catches falsified ZipInfo headers)
+                    if len(shared_strings_xml) > _MAX_MEMBER_BYTES:
+                        logger.warning(
+                            f"{_ss_name} decompressed to {len(shared_strings_xml)} bytes, skipping"
+                        )
+                        raise KeyError(_ss_name)
                     shared_strings_root = ET.fromstring(shared_strings_xml)
                     for si_element in shared_strings_root.findall(
                         f"{{{ns_excel_main}}}si"
@@ -149,7 +184,26 @@ def extract_office_xml_text(file_bytes: bytes, mime_type: str) -> Optional[str]:
             pieces: List[str] = []
             for member in targets:
                 try:
+                    # Layer 2: per-member size + ratio check before decompressing
+                    _info = zf.getinfo(member)
+                    if _info.file_size > _MAX_MEMBER_BYTES:
+                        logger.warning(
+                            f"Skipping oversized member {member}: {_info.file_size} bytes"
+                        )
+                        continue
+                    if _info.compress_size > 0 and (_info.file_size / _info.compress_size) > _MAX_RATIO:
+                        logger.warning(
+                            f"Skipping suspicious member {member}: ratio "
+                            f"{_info.file_size / _info.compress_size:.0f}:1"
+                        )
+                        continue
                     xml_content = zf.read(member)
+                    # Layer 3: post-read backstop (catches falsified ZipInfo headers)
+                    if len(xml_content) > _MAX_MEMBER_BYTES:
+                        logger.warning(
+                            f"Member {member} decompressed to {len(xml_content)} bytes, skipping"
+                        )
+                        continue
                     xml_root = ET.fromstring(xml_content)
                     member_texts: List[str] = []
 
