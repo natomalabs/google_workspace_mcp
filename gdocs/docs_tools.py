@@ -220,8 +220,14 @@ async def get_doc_content(
         downloader = MediaIoBaseDownload(fh, request_obj)
         loop = asyncio.get_event_loop()
         done = False
+        _MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
         while not done:
             status, done = await loop.run_in_executor(None, downloader.next_chunk)
+            if fh.tell() > _MAX_DOWNLOAD_BYTES:
+                return (
+                    f'[File "{file_name}" (ID: {document_id}) exceeds the '
+                    f'{_MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB download limit and cannot be processed.]'
+                )
 
         file_content_bytes = fh.getvalue()
 
