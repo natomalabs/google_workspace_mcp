@@ -9,7 +9,6 @@ from typing import Optional
 
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import io
-import httpx
 
 from auth.service_decorator import require_google_service
 from core.utils import extract_office_xml_text, handle_http_errors
@@ -238,47 +237,26 @@ async def create_drive_file(
     service,
     user_google_email: str,
     file_name: str,
-    content: Optional[str] = None,  # Now explicitly Optional
+    content: str,
     folder_id: str = 'root',
     mime_type: str = 'text/plain',
-    fileUrl: Optional[str] = None,  # Now explicitly Optional
 ) -> str:
     """
     Creates a new file in Google Drive, supporting creation within shared drives.
-    Accepts either direct content or a fileUrl to fetch the content from.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
         file_name (str): The name for the new file.
-        content (Optional[str]): If provided, the content to write to the file.
+        content (str): The text content to write to the file.
         folder_id (str): The ID of the parent folder. Defaults to 'root'. For shared drives, this must be a folder ID within the shared drive.
         mime_type (str): The MIME type of the file. Defaults to 'text/plain'.
-        fileUrl (Optional[str]): If provided, fetches the file content from this URL.
 
     Returns:
         str: Confirmation message of the successful file creation with file link.
     """
-    logger.info(f"[create_drive_file] Invoked. Email: '{user_google_email}', File Name: {file_name}, Folder ID: {folder_id}, fileUrl: {fileUrl}")
+    logger.info(f"[create_drive_file] Invoked. Email: '{user_google_email}', File Name: {file_name}, Folder ID: {folder_id}")
 
-    if not content and not fileUrl:
-        raise Exception("You must provide either 'content' or 'fileUrl'.")
-
-    file_data = None
-    # Prefer fileUrl if both are provided
-    if fileUrl:
-        logger.info(f"[create_drive_file] Fetching file from URL: {fileUrl}")
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(fileUrl)
-            if resp.status_code != 200:
-                raise Exception(f"Failed to fetch file from URL: {fileUrl} (status {resp.status_code})")
-            file_data = await resp.aread()
-            # Try to get MIME type from Content-Type header
-            content_type = resp.headers.get("Content-Type")
-            if content_type and content_type != "application/octet-stream":
-                mime_type = content_type
-                logger.info(f"[create_drive_file] Using MIME type from Content-Type header: {mime_type}")
-    elif content:
-        file_data = content.encode('utf-8')
+    file_data = content.encode('utf-8')
 
     file_metadata = {
         'name': file_name,
