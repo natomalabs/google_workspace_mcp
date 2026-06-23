@@ -161,12 +161,11 @@ class AuthInfoMiddleware(Middleware):
                             context.fastmcp_context.set_state("jti", token_payload.get("jti"))
                             context.fastmcp_context.set_state("auth_provider_type", self.auth_provider_type)
                             
-                            # Set the definitive authentication state for JWT tokens
-                            user_email = token_payload.get("email", token_payload.get("username"))
-                            if user_email:
-                                context.fastmcp_context.set_state("authenticated_user_email", user_email)
-                                context.fastmcp_context.set_state("authenticated_via", "jwt_token")
-                            
+                            # Do NOT promote unverified JWT email to authenticated_user_email.
+                            # Only tokens verified by auth_provider.verify_token() (ya29.* path above)
+                            # or FastMCP's RequireAuthMiddleware (request.state.auth) may set that
+                            # context key. An unverified decode disables signature/exp/aud/iss checks,
+                            # making the email claim fully attacker-controlled.
                             logger.debug("JWT token processed successfully")
                             
                         except jwt.DecodeError as e:
