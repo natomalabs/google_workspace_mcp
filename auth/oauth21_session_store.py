@@ -299,7 +299,11 @@ class OAuth21SessionStore:
             Google Credentials object if validation passes, None otherwise
         """
         with self._lock:
-            # Priority 1: Check auth token email (most secure, from verified JWT)
+            # Priority 1: Check auth token email.
+            # INVARIANT: auth_token_email must come from a cryptographically verified source —
+            # either a ya29.* token verified by auth_provider.verify_token(), or claims from
+            # FastMCP's RequireAuthMiddleware (request.state.auth). Never pass an unverified
+            # JWT claim here; doing so makes this check tautological and bypasses all access control.
             if auth_token_email:
                 if auth_token_email != requested_user_email:
                     logger.error(
