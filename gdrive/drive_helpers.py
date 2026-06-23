@@ -3,7 +3,6 @@ Google Drive Helper Functions
 
 Shared utilities for Google Drive operations including permission checking.
 """
-import re
 from typing import List, Dict, Any, Optional
 
 
@@ -54,20 +53,8 @@ def get_drive_image_url(file_id: str) -> str:
     return f"https://drive.google.com/uc?export=view&id={file_id}"
 
 
-# Precompiled regex patterns for Drive query detection
-DRIVE_QUERY_PATTERNS = [
-    re.compile(r'\b\w+\s*(=|!=|>|<)\s*[\'"].*?[\'"]', re.IGNORECASE),  # field = 'value'
-    re.compile(r'\b\w+\s*(=|!=|>|<)\s*\d+', re.IGNORECASE),            # field = number
-    re.compile(r'\bcontains\b', re.IGNORECASE),                         # contains operator
-    re.compile(r'\bin\s+parents\b', re.IGNORECASE),                     # in parents
-    re.compile(r'\bhas\s*\{', re.IGNORECASE),                          # has {properties}
-    re.compile(r'\btrashed\s*=\s*(true|false)\b', re.IGNORECASE),      # trashed=true/false
-    re.compile(r'\bstarred\s*=\s*(true|false)\b', re.IGNORECASE),      # starred=true/false
-    re.compile(r'[\'"][^\'"]+[\'"]\s+in\s+parents', re.IGNORECASE),    # 'parentId' in parents
-    re.compile(r'\bfullText\s+contains\b', re.IGNORECASE),             # fullText contains
-    re.compile(r'\bname\s*(=|contains)\b', re.IGNORECASE),             # name = or name contains
-    re.compile(r'\bmimeType\s*(=|!=)\b', re.IGNORECASE),               # mimeType operators
-]
+
+_ALLOWED_CORPORA = {"user", "drive"}
 
 
 def build_drive_list_params(
@@ -90,6 +77,9 @@ def build_drive_list_params(
     Returns:
         Dictionary of parameters for Drive API list calls
     """
+    if corpora is not None and corpora not in _ALLOWED_CORPORA:
+        raise ValueError(f"corpora must be one of {_ALLOWED_CORPORA!r}, got {corpora!r}")
+
     list_params = {
         "q": query,
         "pageSize": page_size,
