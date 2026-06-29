@@ -555,7 +555,7 @@ async def get_gmail_messages_content_batch(
                         f"Subject: {subject}\n"
                         f"From: {sender}\n"
                         f"Web Link: {_generate_gmail_web_url(mid)}\n"
-                        f"\n{body_data}\n"
+                        f"\n[UNTRUSTED EMAIL BODY]\n{body_data}\n[END UNTRUSTED EMAIL BODY]\n"
                     )
 
     # Combine all messages with separators
@@ -803,7 +803,9 @@ def _format_thread_content(thread_data: dict, thread_id: str) -> str:
         content_lines.extend(
             [
                 "",
+                "[UNTRUSTED EMAIL BODY]",
                 body_data,
+                "[END UNTRUSTED EMAIL BODY]",
                 "",
             ]
         )
