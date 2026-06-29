@@ -100,10 +100,10 @@ slides:
     - create_presentation
     - get_presentation
   extended:
-    - batch_update_presentation
     - get_page
     - get_page_thumbnail
   complete:
+    - batch_update_presentation
     - read_presentation_comments
     - create_presentation_comment
     - reply_to_presentation_comment
