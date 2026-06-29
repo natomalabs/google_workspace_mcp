@@ -159,7 +159,9 @@ async def _read_comments_impl(service, app_name: str, file_id: str) -> str:
         output.append(f"Comment ID: {comment_id}")
         output.append(f"Author: {author}")
         output.append(f"Created: {created}{status}")
+        output.append("[UNTRUSTED COMMENT CONTENT]")
         output.append(f"Content: {content}")
+        output.append("[END UNTRUSTED COMMENT CONTENT]")
 
         # Add replies if any
         replies = comment.get('replies', [])
@@ -173,7 +175,9 @@ async def _read_comments_impl(service, app_name: str, file_id: str) -> str:
                 output.append(f"    Reply ID: {reply_id}")
                 output.append(f"    Author: {reply_author}")
                 output.append(f"    Created: {reply_created}")
+                output.append("    [UNTRUSTED COMMENT CONTENT]")
                 output.append(f"    Content: {reply_content}")
+                output.append("    [END UNTRUSTED COMMENT CONTENT]")
 
         output.append("")  # Empty line between comments
 
