@@ -195,7 +195,7 @@ async def get_form_response(
         question_response = answer_data.get("textAnswers", {}).get("answers", [])
         if question_response:
             answer_text = ", ".join([ans.get("value", "") for ans in question_response])
-            answer_details.append(f"  Question ID {question_id}: {answer_text}")
+            answer_details.append(f"  Question ID {question_id}: [UNTRUSTED FORM RESPONSE] {answer_text} [END UNTRUSTED FORM RESPONSE]")
         else:
             answer_details.append(f"  Question ID {question_id}: No answer provided")
 
