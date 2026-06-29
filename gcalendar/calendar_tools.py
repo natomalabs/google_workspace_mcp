@@ -1008,7 +1008,12 @@ async def find_free_timeslots(
         f"[find_free_timeslots] Invoked. Email: '{user_google_email}', Identities: {identities}, "
         f"Range: {time_min} to {time_max}, Duration: {duration_minutes}min, Timezone: {timezone}"
     )
-    
+
+    if duration_minutes <= 0:
+        return json.dumps({"error": "duration_minutes must be a positive integer"})
+    if duration_minutes > 1440:
+        return json.dumps({"error": "duration_minutes must not exceed 1440 (24 hours)"})
+
     # Format and validate time parameters
     formatted_time_min = _correct_time_format_for_api(time_min, "time_min")
     formatted_time_max = _correct_time_format_for_api(time_max, "time_max")
