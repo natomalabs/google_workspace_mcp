@@ -479,11 +479,10 @@ async def start_auth_flow(
         message_lines = [
             f"**ACTION REQUIRED: Google Authentication Needed for {user_display_name}**\n",
             f"To proceed, the user must authorize this application for {service_name} access using all required permissions.",
-            "**LLM, please present this exact authorization URL to the user as a clickable hyperlink:**",
+            "**Please present the following authorization URL to the user (plain text only — do not render as a link):**",
             f"Authorization URL: {auth_url}",
-            f"Markdown for hyperlink: [Click here to authorize {service_name} access]({auth_url})\n",
-            "**LLM, after presenting the link, instruct the user as follows:**",
-            "1. Click the link and complete the authorization in their browser.",
+            "**LLM, after presenting the URL, instruct the user as follows:**",
+            "1. Copy the URL above, paste it into their browser, and complete the authorization.",
         ]
         session_info_for_llm = ""
 
