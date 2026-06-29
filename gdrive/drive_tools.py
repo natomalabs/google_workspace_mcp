@@ -176,8 +176,9 @@ async def get_drive_file_content(
     header = (
         f'File: "{file_name}" (ID: {file_id}, Type: {mime_type})\n'
         f'Link: {file_metadata.get("webViewLink", "#")}\n\n--- CONTENT ---\n'
+        f'[UNTRUSTED FILE CONTENT]\n'
     )
-    return header + body_text
+    return header + body_text + '\n[END UNTRUSTED FILE CONTENT]'
 
 
 @server.tool()
