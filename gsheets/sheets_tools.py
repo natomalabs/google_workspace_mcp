@@ -161,8 +161,10 @@ async def read_sheet_values(
 
     text_output = (
         f"Successfully read {len(values)} rows from range '{range_name}' in spreadsheet {spreadsheet_id} for {user_google_email}:\n"
-        + "\n".join(formatted_rows[:50])  # Limit to first 50 rows for readability
+        "[UNTRUSTED SHEET CONTENT]\n"
+        + "\n".join(formatted_rows[:50])
         + (f"\n... and {len(values) - 50} more rows" if len(values) > 50 else "")
+        + "\n[END UNTRUSTED SHEET CONTENT]"
     )
 
     logger.info(f"Successfully read {len(values)} rows for {user_google_email}.")
