@@ -106,7 +106,9 @@ async def get_messages(
         msg_name = msg.get('name', '')
 
         output.append(f"[{create_time}] {sender}:")
+        output.append("  [UNTRUSTED CHAT MESSAGE]")
         output.append(f"  {text_content}")
+        output.append("  [END UNTRUSTED CHAT MESSAGE]")
         output.append(f"  (Message ID: {msg_name})\n")
 
     return "\n".join(output)
@@ -221,6 +223,6 @@ async def search_messages(
         if len(text_content) > 100:
             text_content = text_content[:100] + "..."
 
-        output.append(f"- [{create_time}] {sender} in '{space_name}': {text_content}")
+        output.append(f"- [{create_time}] {sender} in '{space_name}': [UNTRUSTED CHAT MESSAGE] {text_content} [END UNTRUSTED CHAT MESSAGE]")
 
     return "\n".join(output)
