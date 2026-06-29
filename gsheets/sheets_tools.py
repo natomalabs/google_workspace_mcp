@@ -178,7 +178,7 @@ async def modify_sheet_values(
     spreadsheet_id: str,
     range_name: str,
     values: Optional[Union[str, List[List[str]]]] = None,
-    value_input_option: str = "USER_ENTERED",
+    value_input_option: str = "RAW",
     clear_values: bool = False,
 ) -> str:
     """
@@ -189,7 +189,7 @@ async def modify_sheet_values(
         spreadsheet_id (str): The ID of the spreadsheet. Required.
         range_name (str): The range to modify (e.g., "Sheet1!A1:D10", "A1:D10"). Required.
         values (Optional[Union[str, List[List[str]]]]): 2D array of values to write/update. Can be a JSON string or Python list. Required unless clear_values=True.
-        value_input_option (str): How to interpret input values ("RAW" or "USER_ENTERED"). Defaults to "USER_ENTERED".
+        value_input_option (str): How to interpret input values. Defaults to "RAW" (treats values as plain text, preventing formula injection). Use "USER_ENTERED" only when you explicitly want formula evaluation.
         clear_values (bool): If True, clears the range instead of writing values. Defaults to False.
 
     Returns:
