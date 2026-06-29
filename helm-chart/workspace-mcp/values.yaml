@@ -84,8 +84,10 @@ env:
   # If set, this overrides the base_uri:port combination for OAuth endpoints
   WORKSPACE_EXTERNAL_URL: ""
   
-  # OAuth 2.1 support
-  MCP_ENABLE_OAUTH21: "false"
+  # OAuth 2.1 support — strongly recommended: keep this "true" in any networked deployment.
+  # Setting this to "false" leaves the /mcp endpoint unauthenticated, allowing any pod
+  # in the cluster (or any host if ingress is enabled) to invoke all Google Workspace tools.
+  MCP_ENABLE_OAUTH21: "true"
   
   # Development only - set to "1" for local development
   OAUTHLIB_INSECURE_TRANSPORT: "0"
@@ -142,7 +144,7 @@ podDisruptionBudget:
   minAvailable: 1
   # maxUnavailable: 1
 
-# Network policies
+# Network policies — enable to restrict which pods can reach /mcp (recommended for production)
 networkPolicy:
   enabled: false
   ingress: []
