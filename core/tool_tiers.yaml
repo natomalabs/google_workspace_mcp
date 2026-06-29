@@ -44,12 +44,12 @@ docs:
     - create_doc
     - modify_doc_text
   extended:
-    - export_doc_to_pdf
     - search_docs
     - find_and_replace_doc
     - list_docs_in_folder
     - insert_doc_elements
   complete:
+    - export_doc_to_pdf
     - insert_doc_image
     - update_doc_headers_footers
     - batch_update_doc
