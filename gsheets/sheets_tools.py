@@ -7,6 +7,7 @@ This module provides MCP tools for interacting with Google Sheets API.
 import logging
 import asyncio
 import json
+import secrets
 from typing import List, Optional, Union
 from pydantic import Field
 
@@ -159,10 +160,13 @@ async def read_sheet_values(
         padded_row = row + [""] * max(0, len(values[0]) - len(row)) if values else row
         formatted_rows.append(f"Row {i:2d}: {padded_row}")
 
+    fence_id = secrets.token_hex(8)
     text_output = (
         f"Successfully read {len(values)} rows from range '{range_name}' in spreadsheet {spreadsheet_id} for {user_google_email}:\n"
-        + "\n".join(formatted_rows[:50])  # Limit to first 50 rows for readability
+        f"[UNTRUSTED SHEET CONTENT {fence_id}]\n"
+        + "\n".join(formatted_rows[:50])
         + (f"\n... and {len(values) - 50} more rows" if len(values) > 50 else "")
+        + f"\n[END UNTRUSTED SHEET CONTENT {fence_id}]"
     )
 
     logger.info(f"Successfully read {len(values)} rows for {user_google_email}.")
