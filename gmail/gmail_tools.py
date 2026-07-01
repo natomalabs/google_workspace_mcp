@@ -1156,6 +1156,13 @@ async def batch_modify_gmail_message_labels(
             "At least one of add_label_ids or remove_label_ids must be provided."
         )
 
+    _MAX_BATCH_SIZE = 50
+    if len(message_ids) > _MAX_BATCH_SIZE:
+        raise Exception(
+            f"message_ids exceeds the maximum batch size of {_MAX_BATCH_SIZE}. "
+            f"Split into smaller batches to proceed."
+        )
+
     body = {"ids": message_ids}
     if add_label_ids:
         body["addLabelIds"] = add_label_ids
