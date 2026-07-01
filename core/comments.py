@@ -7,6 +7,7 @@ All Google Workspace apps (Docs, Sheets, Slides) use the Drive API for comment o
 
 import logging
 import asyncio
+import secrets
 
 
 from auth.service_decorator import require_google_service
@@ -147,6 +148,7 @@ async def _read_comments_impl(service, app_name: str, file_id: str) -> str:
         return f"No comments found in {app_name} {file_id}"
 
     output = [f"Found {len(comments)} comments in {app_name} {file_id}:\\n"]
+    fence_id = secrets.token_hex(8)
 
     for comment in comments:
         author = comment.get('author', {}).get('displayName', 'Unknown')
@@ -159,9 +161,9 @@ async def _read_comments_impl(service, app_name: str, file_id: str) -> str:
         output.append(f"Comment ID: {comment_id}")
         output.append(f"Author: {author}")
         output.append(f"Created: {created}{status}")
-        output.append("[UNTRUSTED COMMENT CONTENT]")
+        output.append(f"[UNTRUSTED COMMENT CONTENT {fence_id}]")
         output.append(f"Content: {content}")
-        output.append("[END UNTRUSTED COMMENT CONTENT]")
+        output.append(f"[END UNTRUSTED COMMENT CONTENT {fence_id}]")
 
         # Add replies if any
         replies = comment.get('replies', [])
@@ -175,9 +177,9 @@ async def _read_comments_impl(service, app_name: str, file_id: str) -> str:
                 output.append(f"    Reply ID: {reply_id}")
                 output.append(f"    Author: {reply_author}")
                 output.append(f"    Created: {reply_created}")
-                output.append("    [UNTRUSTED COMMENT CONTENT]")
+                output.append(f"    [UNTRUSTED COMMENT CONTENT {fence_id}]")
                 output.append(f"    Content: {reply_content}")
-                output.append("    [END UNTRUSTED COMMENT CONTENT]")
+                output.append(f"    [END UNTRUSTED COMMENT CONTENT {fence_id}]")
 
         output.append("")  # Empty line between comments
 
