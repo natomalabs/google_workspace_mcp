@@ -7,6 +7,7 @@ This module provides MCP tools for interacting with the Gmail API.
 import logging
 import asyncio
 import base64
+import secrets
 import ssl
 from typing import Optional, List, Dict, Literal
 
@@ -420,6 +421,7 @@ async def get_gmail_messages_content_batch(
         raise Exception("No message IDs provided")
 
     output_messages = []
+    fence_id = secrets.token_hex(8)
 
     # Process in smaller chunks to prevent SSL connection exhaustion
     for chunk_start in range(0, len(message_ids), GMAIL_BATCH_SIZE):
@@ -555,7 +557,7 @@ async def get_gmail_messages_content_batch(
                         f"Subject: {subject}\n"
                         f"From: {sender}\n"
                         f"Web Link: {_generate_gmail_web_url(mid)}\n"
-                        f"\n{body_data}\n"
+                        f"\n[UNTRUSTED EMAIL BODY {fence_id}]\n{body_data}\n[END UNTRUSTED EMAIL BODY {fence_id}]\n"
                     )
 
     # Combine all messages with separators
@@ -760,6 +762,7 @@ def _format_thread_content(thread_data: dict, thread_id: str) -> str:
     thread_subject = first_headers.get("Subject", "(no subject)")
 
     # Build the thread content
+    fence_id = secrets.token_hex(8)
     content_lines = [
         f"Thread ID: {thread_id}",
         f"Subject: {thread_subject}",
@@ -803,7 +806,9 @@ def _format_thread_content(thread_data: dict, thread_id: str) -> str:
         content_lines.extend(
             [
                 "",
+                f"[UNTRUSTED EMAIL BODY {fence_id}]",
                 body_data,
+                f"[END UNTRUSTED EMAIL BODY {fence_id}]",
                 "",
             ]
         )
