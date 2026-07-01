@@ -53,9 +53,9 @@ calendar:
   core:
     - list_calendars
     - get_events
+  extended:
     - create_event
     - modify_event
-  extended:
     - delete_event
   complete: []
 
