@@ -1,3 +1,24 @@
+# Tool Tiers
+#
+# Controls which tools the MCP server exposes to the LLM. Tiers are cumulative:
+# selecting a tier includes all tools at that level and every lower tier.
+#
+# Tiers are selected at startup via the --tool-tier CLI flag (main.py).
+# If no tier is specified, all registered tools are exposed.
+#
+# core     - Minimal viable set per service. Basic reads and the most common
+#            writes (search, get, create, send). Smallest attack surface;
+#            safe default for most deployments.
+#
+# extended - Adds higher-risk or less-common operations such as deletes,
+#            batch operations, drafts, and label management. Opt-in for
+#            workflows that explicitly need them.
+#
+# complete - Full access. Adds power/admin tools, structural operations, and
+#            anything with elevated blast radius (permissions, publish settings,
+#            bulk ops, comment management, tools that surface untrusted external
+#            content). Only enable when explicitly required.
+
 gmail:
   core:
     - search_gmail_messages
@@ -44,12 +65,12 @@ docs:
     - create_doc
     - modify_doc_text
   extended:
-    - export_doc_to_pdf
     - search_docs
     - find_and_replace_doc
     - list_docs_in_folder
     - insert_doc_elements
   complete:
+    - export_doc_to_pdf
     - insert_doc_image
     - update_doc_headers_footers
     - batch_update_doc
