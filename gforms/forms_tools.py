@@ -6,6 +6,7 @@ This module provides MCP tools for interacting with Google Forms API.
 
 import logging
 import asyncio
+import secrets
 from typing import Optional, Dict, Any
 
 
@@ -191,11 +192,12 @@ async def get_form_response(
 
     answers = response.get("answers", {})
     answer_details = []
+    fence_id = secrets.token_hex(8)
     for question_id, answer_data in answers.items():
         question_response = answer_data.get("textAnswers", {}).get("answers", [])
         if question_response:
             answer_text = ", ".join([ans.get("value", "") for ans in question_response])
-            answer_details.append(f"  Question ID {question_id}: {answer_text}")
+            answer_details.append(f"  Question ID {question_id}: [UNTRUSTED FORM RESPONSE {fence_id}] {answer_text} [END UNTRUSTED FORM RESPONSE {fence_id}]")
         else:
             answer_details.append(f"  Question ID {question_id}: No answer provided")
 
