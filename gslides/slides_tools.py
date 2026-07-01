@@ -264,9 +264,9 @@ async def get_page_thumbnail(
 - Presentation ID: {presentation_id}
 - Page ID: {page_object_id}
 - Thumbnail Size: {thumbnail_size}
-- Thumbnail URL: {thumbnail_url}
+- Thumbnail URL: [redacted — unauthenticated signed URL omitted to prevent exfiltration]
 
-You can view or download the thumbnail using the provided URL."""
+To view the thumbnail, open the presentation in Google Slides directly."""
 
     logger.info(f"Thumbnail generated successfully for {user_google_email}")
     return confirmation_message
