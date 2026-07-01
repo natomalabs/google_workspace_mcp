@@ -5,6 +5,7 @@ This module provides MCP tools for interacting with Google Drive API.
 """
 import logging
 import asyncio
+import secrets
 from typing import Optional
 
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
@@ -173,11 +174,13 @@ async def get_drive_file_content(
             )
 
     # Assemble response
+    fence_id = secrets.token_hex(8)
     header = (
         f'File: "{file_name}" (ID: {file_id}, Type: {mime_type})\n'
         f'Link: {file_metadata.get("webViewLink", "#")}\n\n--- CONTENT ---\n'
+        f'[UNTRUSTED FILE CONTENT {fence_id}]\n'
     )
-    return header + body_text
+    return header + body_text + f'\n[END UNTRUSTED FILE CONTENT {fence_id}]'
 
 
 @server.tool()
