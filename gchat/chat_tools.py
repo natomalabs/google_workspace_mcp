@@ -5,6 +5,7 @@ This module provides MCP tools for interacting with Google Chat API.
 """
 import logging
 import asyncio
+import secrets
 from typing import Optional
 
 from googleapiclient.errors import HttpError
@@ -99,6 +100,7 @@ async def get_messages(
         return f"No messages found in space '{space_name}' (ID: {space_id})."
 
     output = [f"Messages from '{space_name}' (ID: {space_id}):\n"]
+    fence_id = secrets.token_hex(8)
     for msg in messages:
         sender = msg.get('sender', {}).get('displayName', 'Unknown Sender')
         create_time = msg.get('createTime', 'Unknown Time')
@@ -106,9 +108,9 @@ async def get_messages(
         msg_name = msg.get('name', '')
 
         output.append(f"[{create_time}] {sender}:")
-        output.append("  [UNTRUSTED CHAT MESSAGE]")
+        output.append(f"  [UNTRUSTED CHAT MESSAGE {fence_id}]")
         output.append(f"  {text_content}")
-        output.append("  [END UNTRUSTED CHAT MESSAGE]")
+        output.append(f"  [END UNTRUSTED CHAT MESSAGE {fence_id}]")
         output.append(f"  (Message ID: {msg_name})\n")
 
     return "\n".join(output)
