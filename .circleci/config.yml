@@ -1,0 +1,34 @@
+version: 2.1
+
+setup: true
+
+orbs:
+  path-filtering: circleci/path-filtering@1.2.0
+
+workflows:
+  setup-workflow:
+    jobs:
+      - path-filtering/filter:
+          tag: "3.11"
+          base-revision: main
+          config-path: .circleci/continue_config.yml
+          mapping: |
+            pyproject.toml build-workspace-mcp true
+            uv.lock build-workspace-mcp true
+            main.py build-workspace-mcp true
+            fastmcp_server.py build-workspace-mcp true
+            auth/.* build-workspace-mcp true
+            core/.* build-workspace-mcp true
+            gmail/.* build-workspace-mcp true
+            gdrive/.* build-workspace-mcp true
+            gdocs/.* build-workspace-mcp true
+            gsheets/.* build-workspace-mcp true
+            gslides/.* build-workspace-mcp true
+            gcalendar/.* build-workspace-mcp true
+            gchat/.* build-workspace-mcp true
+            gforms/.* build-workspace-mcp true
+            gtasks/.* build-workspace-mcp true
+            gsearch/.* build-workspace-mcp true
+            smithery.yaml build-workspace-mcp true
+            Dockerfile build-workspace-mcp true
+            .circleci/.* build-workspace-mcp true
