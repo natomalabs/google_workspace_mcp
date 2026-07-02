@@ -353,8 +353,8 @@ def handle_http_errors(tool_name: str, is_read_only: bool = False, service_type:
                         # Authentication/authorization errors
                         message = (
                             f"API error in {tool_name}: {error}. "
-                            f"You might need to re-authenticate for user '{user_google_email}'. "
-                            f"LLM: Try 'start_google_auth' with the user's email and the appropriate service_name."
+                            f"Authentication or authorization failed for user '{user_google_email}'. "
+                            f"Please re-authenticate manually if needed."
                         )
                     else:
                         # Other HTTP errors (400 Bad Request, etc.) - don't suggest re-auth
