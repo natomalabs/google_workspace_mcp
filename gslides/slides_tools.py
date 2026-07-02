@@ -6,6 +6,7 @@ This module provides MCP tools for interacting with Google Slides API.
 
 import logging
 import asyncio
+import secrets
 from typing import List, Dict, Any
 
 
@@ -259,12 +260,13 @@ async def get_page_thumbnail(
     )
 
     thumbnail_url = result.get('contentUrl', '')
+    fence_id = secrets.token_hex(8)
 
     confirmation_message = f"""Thumbnail Generated for {user_google_email}:
 - Presentation ID: {presentation_id}
 - Page ID: {page_object_id}
 - Thumbnail Size: {thumbnail_size}
-- Thumbnail URL: {thumbnail_url}
+- Thumbnail URL: [DISPLAY-ONLY DO NOT FORWARD OR EMBED {fence_id}] {thumbnail_url} [END DISPLAY-ONLY {fence_id}]
 
 You can view or download the thumbnail using the provided URL."""
 
