@@ -44,6 +44,24 @@ from auth.oauth_common_handlers import (
 logger = logging.getLogger(__name__)
 
 
+def _is_email_verified(claims: dict) -> bool:
+    """
+    Return True only if Google positively asserts the email address is verified.
+
+    Google's tokeninfo endpoint returns ``email_verified`` as the JSON string
+    "true"/"false", while ID-token claims use a real boolean, so both shapes must
+    be handled. Anything else — missing, null, "false", or an unexpected type — is
+    treated as unverified and must be rejected: an unverified ``email`` claim is
+    attacker-choosable and cannot be used as an authenticated identity.
+    """
+    value = claims.get("email_verified")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return False
+
+
 class GoogleRemoteAuthProvider(RemoteAuthProvider):
     """
     RemoteAuthProvider implementation for Google Workspace.
@@ -198,6 +216,21 @@ class GoogleRemoteAuthProvider(RemoteAuthProvider):
                             logger.error("Token is expired")
                             return None
 
+                        # Require a Google-verified email before treating the
+                        # 'email' claim as an authenticated identity. Without this,
+                        # an attacker holding a Google account whose email claim
+                        # equals a victim's address but is unverified authenticates
+                        # as that victim and overwrites their entry in the global
+                        # per-email session store. handle_proxy_token_exchange
+                        # already enforces this; the omission here was the gap.
+                        if not _is_email_verified(token_info):
+                            logger.error(
+                                "Rejecting token: Google reports email "
+                                f"{token_info.get('email')!r} is not verified "
+                                "(email_verified is not true)"
+                            )
+                            return None
+
                         # Create an access token object that matches the expected interface
                         from types import SimpleNamespace
                         import time
@@ -274,6 +307,17 @@ class GoogleRemoteAuthProvider(RemoteAuthProvider):
                 # Extract user information from token claims
                 user_email = access_token.claims.get("email")
                 if user_email:
+                    # Same requirement as the tokeninfo branch: an unverified
+                    # 'email' claim is attacker-choosable and must not become an
+                    # authenticated principal or a key into the session store.
+                    if not _is_email_verified(access_token.claims):
+                        logger.error(
+                            "Rejecting JWT: Google reports email "
+                            f"{user_email!r} is not verified "
+                            "(email_verified is not true)"
+                        )
+                        return None
+
                     from auth.oauth21_session_store import get_oauth21_session_store
 
                     store = get_oauth21_session_store()
