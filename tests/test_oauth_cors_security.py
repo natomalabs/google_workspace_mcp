@@ -12,8 +12,6 @@ client_secret, so a reflected Access-Control-Allow-Origin is a secret-exfiltrati
 primitive.
 """
 
-import importlib
-
 import pytest
 
 import auth.oauth_config as oauth_config_module
