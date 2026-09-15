@@ -312,23 +312,38 @@ def log_security_event(event_type: str, details: Dict[str, Any], request: Option
 
 def get_development_cors_headers(origin: Optional[str] = None) -> Dict[str, str]:
     """
-    Get minimal CORS headers for development scenarios only.
-    
-    Only allows localhost origins for development tools and inspectors.
-    
+    Get CORS headers for an OAuth endpoint response.
+
+    The allow/deny decision is delegated to OAuthConfig.is_origin_allowed(), which
+    honours the OAUTH_ALLOWED_ORIGINS allow-list and the OAUTH_ALLOW_LOCALHOST_ORIGINS
+    flag. This function previously made the decision itself with a hard-coded
+    localhost prefix match, which meant the documented OAUTH_ALLOWED_ORIGINS knob
+    was never enforced (SNOW-3697274) and any localhost page could read the
+    client_secret-bearing /oauth2/register and /oauth2/token responses even in
+    production (SNOW-3687336).
+
     Args:
         origin: The request origin (will be validated)
-        
+
     Returns:
-        CORS headers for localhost origins only, empty dict otherwise
+        CORS headers if the origin is allowed, empty dict otherwise
     """
-    # Only allow localhost origins for development
-    if origin and (origin.startswith("http://localhost:") or origin.startswith("http://127.0.0.1:")):
-        return {
-            "Access-Control-Allow-Origin": origin,
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
-            "Access-Control-Max-Age": "3600"
-        }
-    
-    return {}
+    if not origin:
+        return {}
+
+    # Imported lazily to avoid a circular import at module load time.
+    from auth.oauth_config import get_oauth_config
+
+    if not get_oauth_config().is_origin_allowed(origin):
+        logger.debug(f"CORS: rejecting origin {origin!r} (not in allowed origins)")
+        return {}
+
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Access-Control-Max-Age": "3600",
+        # The response varies by Origin, so caches must not serve one origin's
+        # ACAO to another.
+        "Vary": "Origin",
+    }

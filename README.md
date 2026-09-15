@@ -1013,7 +1013,8 @@ export GOOGLE_OAUTH_REDIRECT_URI="https://your-domain.com/oauth2callback"
 
 You also have options for:
 | `OAUTH_CUSTOM_REDIRECT_URIS` *(optional)* | Comma-separated list of additional redirect URIs |
-| `OAUTH_ALLOWED_ORIGINS` *(optional)* | Comma-separated list of additional CORS origins |
+| `OAUTH_ALLOWED_ORIGINS` *(optional)* | Comma-separated list of additional CORS origins. Matched exactly against the request `Origin`. |
+| `OAUTH_ALLOW_LOCALHOST_ORIGINS` *(optional)* | `true`/`false`. Additionally allow any `http://localhost:*` / `http://127.0.0.1:*` origin, for local IDEs and MCP inspectors. Defaults to `true` only when `WORKSPACE_EXTERNAL_URL` is unset. Leave disabled on any publicly reachable deployment: the OAuth endpoints return the confidential client secret, so a permissive origin lets a page on the victim's own loopback interface read it. |
 
 **Important**:
 - Use `WORKSPACE_EXTERNAL_URL` when all OAuth endpoints should use the external URL (recommended for reverse proxy setups)
