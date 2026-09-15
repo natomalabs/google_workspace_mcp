@@ -12,7 +12,7 @@ from fastmcp import FastMCP
 from auth.oauth21_session_store import get_oauth21_session_store, set_auth_provider
 from auth.google_auth import handle_auth_callback, start_auth_flow, check_client_secrets
 from auth.mcp_session_middleware import MCPSessionMiddleware
-from auth.oauth_responses import create_error_response, create_success_response, create_server_error_response
+from auth.oauth_responses import create_error_response, create_success_response, create_server_error_response, new_error_reference
 from auth.auth_info_middleware import AuthInfoMiddleware
 from auth.fastmcp_google_auth import GoogleWorkspaceAuthProvider
 from auth.scopes import SCOPES, get_current_scopes # noqa
@@ -136,9 +136,16 @@ async def oauth2_callback(request: Request) -> HTMLResponse:
     error = request.query_params.get("error")
 
     if error:
-        msg = f"Authentication failed: Google returned an error: {error}. State: {state}."
-        logger.error(msg)
-        return create_error_response(msg)
+        # Log the attacker-controllable values, but do not reflect them to the
+        # browser beyond the generic message; create_error_response escapes what
+        # it does render.
+        logger.error(
+            f"Authentication failed: Google returned an error: {error!r}. State: {state!r}."
+        )
+        return create_error_response(
+            "Authentication failed: Google returned an error. "
+            "Please close this window and try again."
+        )
 
     if not code:
         msg = "Authentication failed: No authorization code received from Google."
@@ -148,9 +155,12 @@ async def oauth2_callback(request: Request) -> HTMLResponse:
     try:
         error_message = check_client_secrets()
         if error_message:
-            return create_server_error_response(error_message)
+            # This string embeds CONFIG_CLIENT_SECRETS_PATH; log it, don't serve it.
+            reference = new_error_reference()
+            logger.error(f"OAuth callback misconfiguration [{reference}]: {error_message}")
+            return create_server_error_response(reference)
 
-        logger.info(f"OAuth callback: Received code (state: {state}).")
+        logger.info(f"OAuth callback: Received code (state: {state!r}).")
 
         verified_user_id, credentials = handle_auth_callback(
             scopes=get_current_scopes(),
@@ -185,8 +195,13 @@ async def oauth2_callback(request: Request) -> HTMLResponse:
 
         return create_success_response(verified_user_id)
     except Exception as e:
-        logger.error(f"Error processing OAuth callback: {str(e)}", exc_info=True)
-        return create_server_error_response(str(e))
+        # Never render str(e): oauthlib/google-auth exception text embeds the
+        # request URL, configured scopes and partial token-endpoint responses.
+        reference = new_error_reference()
+        logger.error(
+            f"Error processing OAuth callback [{reference}]: {str(e)}", exc_info=True
+        )
+        return create_server_error_response(reference)
 
 @server.tool()
 async def start_google_auth(service_name: str, user_google_email: str = USER_GOOGLE_EMAIL) -> str:

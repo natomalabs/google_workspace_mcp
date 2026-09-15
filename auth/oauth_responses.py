@@ -3,10 +3,51 @@ Shared OAuth callback response templates.
 
 Provides reusable HTML response templates for OAuth authentication flows
 to eliminate duplication between server.py and oauth_callback_server.py.
+
+Security note: /oauth2callback is reachable by anyone who can get a URL loaded in
+the victim's browser, and every value interpolated into these templates may derive
+from attacker-controlled query parameters or from library exception text that
+embeds them. All interpolated values are therefore HTML-escaped, and the responses
+carry a restrictive CSP so that any escaping gap cannot become script execution.
 """
 
+import html
+import re
+import uuid
 from fastapi.responses import HTMLResponse
 from typing import Optional
+
+# A correlation reference is always a short opaque token. Anything else passed to
+# create_server_error_response is treated as an accidental exception string and
+# dropped rather than rendered, so the CWE-209 leak cannot be reintroduced by a
+# caller that forgets the contract.
+_ERROR_REFERENCE_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
+# These pages are static HTML with no external resources and no legitimate need
+# for scripting beyond the inline auto-close timer, so lock everything else down.
+# 'unsafe-inline' is required for the inline <script> that closes the window;
+# script-src is otherwise 'none', and no other resource type is permitted.
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; "
+        "script-src 'unsafe-inline'; "
+        "style-src 'unsafe-inline'; "
+        "base-uri 'none'; "
+        "form-action 'none'; "
+        "frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
+
+
+def new_error_reference() -> str:
+    """
+    Generate a short opaque reference to correlate a browser-visible error with
+    the full detail in the server log.
+    """
+    return uuid.uuid4().hex[:12]
 
 
 def create_error_response(error_message: str, status_code: int = 400) -> HTMLResponse:
@@ -14,24 +55,28 @@ def create_error_response(error_message: str, status_code: int = 400) -> HTMLRes
     Create a standardized error response for OAuth failures.
 
     Args:
-        error_message: The error message to display
+        error_message: The error message to display. HTML-escaped before rendering;
+            callers must still ensure it contains no secrets or internal paths.
         status_code: HTTP status code (default 400)
 
     Returns:
         HTMLResponse with error page
     """
+    safe_message = html.escape(error_message, quote=True)
     content = f"""
         <html>
         <head><title>Authentication Error</title></head>
         <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; text-align: center;">
             <h2 style="color: #d32f2f;">Authentication Error</h2>
-            <p>{error_message}</p>
+            <p>{safe_message}</p>
             <p>Please ensure you grant the requested permissions. You can close this window and try again.</p>
             <script>setTimeout(function() {{ window.close(); }}, 10000);</script>
         </body>
         </html>
     """
-    return HTMLResponse(content=content, status_code=status_code)
+    return HTMLResponse(
+        content=content, status_code=status_code, headers=_SECURITY_HEADERS
+    )
 
 
 def create_success_response(verified_user_id: Optional[str] = None) -> HTMLResponse:
@@ -45,7 +90,9 @@ def create_success_response(verified_user_id: Optional[str] = None) -> HTMLRespo
         HTMLResponse with success page
     """
     # Handle the case where no user ID is provided
-    user_display = verified_user_id if verified_user_id else "Google User"
+    user_display = html.escape(
+        verified_user_id if verified_user_id else "Google User", quote=True
+    )
 
     content = f"""<html>
 <head>
@@ -196,28 +243,47 @@ def create_success_response(verified_user_id: Optional[str] = None) -> HTMLRespo
     </div>
 </body>
 </html>"""
-    return HTMLResponse(content=content)
+    return HTMLResponse(content=content, headers=_SECURITY_HEADERS)
 
 
-def create_server_error_response(error_detail: str) -> HTMLResponse:
+def create_server_error_response(error_reference: Optional[str] = None) -> HTMLResponse:
     """
     Create a standardized server error response for OAuth processing failures.
 
+    Deliberately does NOT render the underlying exception text. The previous
+    behaviour interpolated raw ``str(e)`` from the token exchange into the page,
+    which leaked the absolute client-secrets path, the configured redirect_uri and
+    scope list, and partial token-endpoint responses to any unauthenticated caller
+    who could get a crafted /oauth2callback URL loaded in a browser — and, where a
+    library exception embedded attacker-supplied URL bytes, became a reflected XSS
+    sink. Callers must log the detail server-side and pass only the correlation
+    reference here.
+
     Args:
-        error_detail: The detailed error message
+        error_reference: Opaque id (see ``new_error_reference``) that an operator
+            can grep for in the server log. Optional.
 
     Returns:
         HTMLResponse with server error page
     """
+    reference_html = ""
+    if error_reference and _ERROR_REFERENCE_RE.fullmatch(error_reference):
+        safe_reference = html.escape(error_reference, quote=True)
+        reference_html = (
+            f'<p style="color: #666; font-size: 13px;">Reference: '
+            f"<code>{safe_reference}</code></p>"
+        )
+
     content = f"""
         <html>
         <head><title>Authentication Processing Error</title></head>
         <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; text-align: center;">
             <h2 style="color: #d32f2f;">Authentication Processing Error</h2>
-            <p>An unexpected error occurred while processing your authentication: {error_detail}</p>
+            <p>An unexpected error occurred while processing your authentication.</p>
             <p>Please try again. You can close this window.</p>
+            {reference_html}
             <script>setTimeout(function() {{ window.close(); }}, 10000);</script>
         </body>
         </html>
     """
-    return HTMLResponse(content=content, status_code=500)
+    return HTMLResponse(content=content, status_code=500, headers=_SECURITY_HEADERS)
