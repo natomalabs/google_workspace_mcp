@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 import jwt
 from google.auth.exceptions import RefreshError
@@ -17,6 +18,7 @@ from googleapiclient.errors import HttpError
 from auth.credential_store import get_credential_store, is_valid_user_email
 from auth.oauth21_session_store import get_oauth21_session_store
 from auth.oauth_config import get_oauth_config, is_stateless_mode
+from auth.oauth_state_store import get_oauth_state_store
 from auth.scopes import SCOPES, get_current_scopes  # noqa
 from core.config import get_oauth_redirect_uri, get_transport_mode
 from core.context import get_fastmcp_session_id
@@ -383,16 +385,57 @@ def check_client_secrets() -> Optional[str]:
     return None
 
 
+def _extract_state(authorization_response: str) -> Optional[str]:
+    """
+    Pull the 'state' query parameter out of the OAuth callback URL.
+
+    Returns None if absent or malformed. A single value is required: a repeated
+    'state' parameter is rejected, since it would let an attacker smuggle a second
+    value past a check that only inspects the first.
+    """
+    try:
+        query = urlparse(authorization_response).query
+        values = parse_qs(query).get("state", [])
+    except (ValueError, AttributeError):
+        return None
+
+    if len(values) != 1:
+        if len(values) > 1:
+            logger.warning("OAuth callback contained multiple 'state' parameters; rejecting")
+        return None
+
+    return values[0] or None
+
+
 def create_oauth_flow(
-    scopes: List[str], redirect_uri: str, state: Optional[str] = None
+    scopes: List[str],
+    redirect_uri: str,
+    state: Optional[str] = None,
+    code_verifier: Optional[str] = None,
 ) -> Flow:
-    """Creates an OAuth flow using environment variables or client secrets file."""
+    """
+    Creates an OAuth flow using environment variables or client secrets file.
+
+    Args:
+        scopes: OAuth scopes to request.
+        redirect_uri: The redirect URI for this flow.
+        state: On the authorization leg, the state to send. On the callback leg,
+            the expected state — oauthlib verifies the callback against it and
+            skips verification entirely when it is None.
+        code_verifier: The PKCE verifier. Supply the stored value on the callback
+            leg so the token exchange can prove the earlier code_challenge. When
+            None on the authorization leg, the library autogenerates one.
+    """
     # Try environment variables first
     env_config = load_client_secrets_from_env()
     if env_config:
         # Use client config directly
         flow = Flow.from_client_config(
-            env_config, scopes=scopes, redirect_uri=redirect_uri, state=state
+            env_config,
+            scopes=scopes,
+            redirect_uri=redirect_uri,
+            state=state,
+            code_verifier=code_verifier,
         )
         logger.debug("Created OAuth flow from environment variables")
         return flow
@@ -408,6 +451,7 @@ def create_oauth_flow(
         scopes=scopes,
         redirect_uri=redirect_uri,
         state=state,
+        code_verifier=code_verifier,
     )
     logger.debug(
         f"Created OAuth flow from client secrets file: {CONFIG_CLIENT_SECRETS_PATH}"
@@ -463,7 +507,8 @@ async def start_auth_flow(
             )
             os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
-        oauth_state = os.urandom(16).hex()
+        state_store = get_oauth_state_store()
+        oauth_state = state_store.new_state()
 
         flow = create_oauth_flow(
             scopes=get_current_scopes(),  # Use scopes for enabled tools only
@@ -471,9 +516,37 @@ async def start_auth_flow(
             state=oauth_state,
         )
 
-        auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+        # authorization_url() derives the PKCE code_challenge from
+        # flow.code_verifier, autogenerating the verifier if it is unset. The
+        # verifier must be retained until the token exchange, otherwise the
+        # challenge is unprovable and PKCE gives no protection at all — which was
+        # the defect in SNOW-3697295.
+        auth_url, returned_state = flow.authorization_url(
+            access_type="offline", prompt="consent"
+        )
+
+        if flow.code_verifier is None:
+            # Should not happen with google-auth-oauthlib's autogeneration, but if
+            # a future version changes the default we must not silently downgrade
+            # to a non-PKCE flow.
+            raise RuntimeError(
+                "OAuth flow produced no PKCE code_verifier; refusing to start an "
+                "authorization flow without PKCE protection."
+            )
+
+        state_store.put(
+            state=returned_state or oauth_state,
+            code_verifier=flow.code_verifier,
+            redirect_uri=redirect_uri,
+            scopes=get_current_scopes(),
+        )
+
+        # No separate log line for the state value. It is unavoidably present in
+        # the authorization URL below (that URL has to reach the user), but there
+        # is no reason to also emit it on its own where it reads as a copyable
+        # token.
         logger.info(
-            f"Auth flow started for {user_display_name}. State: {oauth_state}. Advise user to visit: {auth_url}"
+            f"Auth flow started for {user_display_name} (PKCE S256). Advise user to visit: {auth_url}"
         )
 
         message_lines = [
@@ -545,7 +618,8 @@ def handle_auth_callback(
         A tuple containing the user_google_email and the obtained Credentials object.
 
     Raises:
-        ValueError: If the state is missing or doesn't match.
+        ValueError: If the state is missing, unrecognised, expired or already used,
+            or if the user's email cannot be determined.
         FlowExchangeError: If the code exchange fails.
         HttpError: If fetching user info fails.
     """
@@ -563,13 +637,53 @@ def handle_auth_callback(
             )
             os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
-        flow = create_oauth_flow(scopes=scopes, redirect_uri=redirect_uri)
+        # Verify the state parameter and recover the PKCE code_verifier for this
+        # authorization attempt. Both are mandatory:
+        #
+        #  * state is the CSRF binding between the authorization request we issued
+        #    and this callback. oauthlib only validates it when given an expected
+        #    value, so it must be passed to the flow explicitly.
+        #  * code_verifier proves possession of the code_challenge we sent. Without
+        #    it the challenge is unprovable and PKCE protects nothing, which is the
+        #    substance of SNOW-3697295.
+        #
+        # The store entry is single-use, so a captured callback URL cannot be
+        # replayed.
+        callback_state = _extract_state(authorization_response)
+        if not callback_state:
+            raise ValueError(
+                "OAuth callback is missing the 'state' parameter; rejecting. "
+                "Start the authentication flow again."
+            )
 
-        # Exchange the authorization code for credentials
-        # Note: fetch_token will use the redirect_uri configured in the flow
+        pending = get_oauth_state_store().consume(callback_state)
+        if pending is None:
+            # This is also reached if a caller drove Google to this endpoint with a
+            # state we never issued. /oauth2/register advertises this callback as a
+            # redirect_uri, but an authorization we did not initiate has no
+            # code_verifier on our side, so we could not complete PKCE for it in any
+            # case. OAuth 2.1 clients are expected to use their own loopback
+            # redirect_uri and the /oauth2/token proxy instead.
+            raise ValueError(
+                "OAuth callback presented an unrecognised, expired or already-used "
+                "'state' value; rejecting. Start the authentication flow again."
+            )
+
+        flow = create_oauth_flow(
+            scopes=scopes,
+            redirect_uri=redirect_uri,
+            state=callback_state,
+            code_verifier=pending.get("code_verifier"),
+        )
+
+        # Exchange the authorization code for credentials.
+        # fetch_token uses the redirect_uri configured in the flow, verifies the
+        # state against the value we just supplied, and sends code_verifier.
         flow.fetch_token(authorization_response=authorization_response)
         credentials = flow.credentials
-        logger.info("Successfully exchanged authorization code for tokens.")
+        logger.info(
+            "Successfully exchanged authorization code for tokens (state verified, PKCE verifier sent)."
+        )
 
         # Get user info to determine user_id (using email here)
         user_info = get_user_info(credentials)
