@@ -8,7 +8,7 @@ session context management and credential conversion functionality.
 
 import contextvars
 import logging
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Set
 from threading import RLock
 from datetime import datetime, timedelta
 from dataclasses import dataclass
@@ -154,6 +154,11 @@ class OAuth21SessionStore:
         self._sessions: Dict[str, Dict[str, Any]] = {}
         self._mcp_session_mapping: Dict[str, str] = {}  # Maps FastMCP session ID -> user email
         self._session_auth_binding: Dict[str, str] = {}  # Maps session ID -> authenticated user email (immutable)
+        # Every session/mcp-session id ever issued to a user, so revocation can
+        # purge all of them. _sessions[user] only remembers the most recent pair,
+        # which left earlier ids live as permanent impersonation keys
+        # (SNOW-3697276).
+        self._user_session_ids: Dict[str, Set[str]] = {}
         self._lock = RLock()
 
     def store_session(
@@ -187,6 +192,24 @@ class OAuth21SessionStore:
             issuer: Token issuer (e.g., "https://accounts.google.com")
         """
         with self._lock:
+            # Carry forward long-lived secrets when this call does not supply them.
+            #
+            # verify_token() re-invokes store_session() on every /mcp request with
+            # only the bearer access_token, so a naive overwrite nulls the
+            # refresh_token, client_id and client_secret that the /oauth2callback
+            # flow stored. That both breaks token refresh for legitimate users and
+            # is the destructive half of the session-store poisoning finding
+            # (SNOW-3697308). Only replace these fields when a real value is given.
+            existing = self._sessions.get(user_email) or {}
+            if refresh_token is None:
+                refresh_token = existing.get("refresh_token")
+            if client_id is None:
+                client_id = existing.get("client_id")
+            if client_secret is None:
+                client_secret = existing.get("client_secret")
+            if expiry is None:
+                expiry = existing.get("expiry")
+
             session_info = {
                 "access_token": access_token,
                 "refresh_token": refresh_token,
@@ -201,6 +224,14 @@ class OAuth21SessionStore:
             }
 
             self._sessions[user_email] = session_info
+
+            # Remember every id ever associated with this user so remove_session()
+            # can revoke all of them, not just the most recent pair.
+            issued = self._user_session_ids.setdefault(user_email, set())
+            if mcp_session_id:
+                issued.add(mcp_session_id)
+            if session_id:
+                issued.add(session_id)
 
             # Store MCP session mapping if provided
             if mcp_session_id:
@@ -395,31 +426,52 @@ class OAuth21SessionStore:
             return self._sessions.get(user_email)
 
     def remove_session(self, user_email: str):
-        """Remove session for a user."""
+        """
+        Revoke a user's session and every session id ever issued to them.
+
+        Previously this removed only the single mcp_session_id/session_id recorded
+        in _sessions[user_email], leaving every earlier id live in
+        _mcp_session_mapping and _session_auth_binding for the lifetime of the
+        process. Once the user re-authenticated, those orphaned ids became working
+        impersonation keys again via the mcp_session_binding fallback, defeating
+        the only revocation mechanism the store offers (SNOW-3697276).
+        """
         with self._lock:
-            if user_email in self._sessions:
-                # Get session IDs to clean up mappings
-                session_info = self._sessions.get(user_email, {})
-                mcp_session_id = session_info.get("mcp_session_id")
-                session_id = session_info.get("session_id")
+            had_session = user_email in self._sessions
 
-                # Remove from sessions
-                del self._sessions[user_email]
+            # Collect every id we have ever seen for this user: the tracked set,
+            # the current session_info, and a reverse sweep of both maps so that
+            # ids predating the tracking set are cleaned up too.
+            ids_to_purge: Set[str] = set(self._user_session_ids.get(user_email, set()))
 
-                # Remove from MCP mapping if exists
-                if mcp_session_id and mcp_session_id in self._mcp_session_mapping:
-                    del self._mcp_session_mapping[mcp_session_id]
-                    # Also remove from auth binding
-                    if mcp_session_id in self._session_auth_binding:
-                        del self._session_auth_binding[mcp_session_id]
-                    logger.info(f"Removed OAuth 2.1 session for {user_email} and MCP mapping for {mcp_session_id}")
+            session_info = self._sessions.get(user_email, {})
+            for key in ("mcp_session_id", "session_id"):
+                value = session_info.get(key)
+                if value:
+                    ids_to_purge.add(value)
 
-                # Remove OAuth session binding if exists
-                if session_id and session_id in self._session_auth_binding:
-                    del self._session_auth_binding[session_id]
+            ids_to_purge.update(
+                sid for sid, email in self._mcp_session_mapping.items() if email == user_email
+            )
+            ids_to_purge.update(
+                sid for sid, email in self._session_auth_binding.items() if email == user_email
+            )
 
-                if not mcp_session_id:
-                    logger.info(f"Removed OAuth 2.1 session for {user_email}")
+            self._sessions.pop(user_email, None)
+            self._user_session_ids.pop(user_email, None)
+
+            purged = 0
+            for sid in ids_to_purge:
+                if self._mcp_session_mapping.pop(sid, None) is not None:
+                    purged += 1
+                if self._session_auth_binding.pop(sid, None) is not None:
+                    purged += 1
+
+            if had_session or purged:
+                logger.info(
+                    f"Removed OAuth 2.1 session for {user_email}; "
+                    f"purged {len(ids_to_purge)} session id(s) from mapping and binding tables"
+                )
 
     def has_session(self, user_email: str) -> bool:
         """Check if a user has an active session."""

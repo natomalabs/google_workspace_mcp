@@ -17,7 +17,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from auth.scopes import SCOPES, get_current_scopes # noqa
-from auth.oauth_responses import create_error_response, create_success_response, create_server_error_response
+from auth.oauth_responses import create_error_response, create_success_response, create_server_error_response, new_error_reference
 from auth.google_auth import handle_auth_callback, check_client_secrets
 from auth.oauth_config import get_oauth_redirect_uri
 
@@ -51,9 +51,14 @@ class MinimalOAuthServer:
             error = request.query_params.get("error")
 
             if error:
-                error_message = f"Authentication failed: Google returned an error: {error}. State: {state}."
-                logger.error(error_message)
-                return create_error_response(error_message)
+                # Attacker-controllable; log it but do not reflect it to the browser.
+                logger.error(
+                    f"Authentication failed: Google returned an error: {error!r}. State: {state!r}."
+                )
+                return create_error_response(
+                    "Authentication failed: Google returned an error. "
+                    "Please close this window and try again."
+                )
 
             if not code:
                 error_message = "Authentication failed: No authorization code received from Google."
@@ -64,9 +69,14 @@ class MinimalOAuthServer:
                 # Check if we have credentials available (environment variables or file)
                 error_message = check_client_secrets()
                 if error_message:
-                    return create_server_error_response(error_message)
+                    # Embeds CONFIG_CLIENT_SECRETS_PATH; log it, don't serve it.
+                    reference = new_error_reference()
+                    logger.error(
+                        f"OAuth callback misconfiguration [{reference}]: {error_message}"
+                    )
+                    return create_server_error_response(reference)
 
-                logger.info(f"OAuth callback: Received code (state: {state}). Attempting to exchange for tokens.")
+                logger.info(f"OAuth callback: Received code (state: {state!r}). Attempting to exchange for tokens.")
 
                 # Session ID tracking removed - not needed
 
@@ -79,19 +89,34 @@ class MinimalOAuthServer:
                     session_id=None
                 )
 
-                logger.info(f"OAuth callback: Successfully authenticated user: {verified_user_id} (state: {state}).")
+                logger.info(f"OAuth callback: Successfully authenticated user: {verified_user_id} (state: {state!r}).")
 
                 # Return success page using shared template
                 return create_success_response(verified_user_id)
 
             except Exception as e:
-                error_message_detail = f"Error processing OAuth callback (state: {state}): {str(e)}"
-                logger.error(error_message_detail, exc_info=True)
-                return create_server_error_response(str(e))
+                # Never render str(e): library exception text embeds the request
+                # URL, configured scopes and partial token-endpoint responses.
+                reference = new_error_reference()
+                logger.error(
+                    f"Error processing OAuth callback [{reference}] (state: {state!r}): {str(e)}",
+                    exc_info=True,
+                )
+                return create_server_error_response(reference)
 
     def start(self) -> tuple[bool, str]:
         """
         Start the minimal OAuth server.
+
+        The port is bound once, up front, and the already-bound socket is handed to
+        uvicorn. The previous implementation bound a probe socket, closed it, then
+        let uvicorn bind again later from a background thread, and treated "something
+        is listening on this port" as success. A co-resident unprivileged process
+        running a tight bind() loop reliably won that gap, so the server would report
+        success while the attacker owned the port — and then hand the user a Google
+        consent URL whose redirect_uri pointed at the attacker's listener
+        (SNOW-3697295). Holding the socket from check to use removes the window
+        entirely: if we cannot bind, we fail.
 
         Returns:
             Tuple of (success: bool, error_message: str)
@@ -100,7 +125,6 @@ class MinimalOAuthServer:
             logger.info("Minimal OAuth server is already running")
             return True, ""
 
-        # Check if port is available
         # Extract hostname from base_uri (e.g., "http://localhost" -> "localhost")
         try:
             parsed_uri = urlparse(self.base_uri)
@@ -108,53 +132,126 @@ class MinimalOAuthServer:
         except Exception:
             hostname = 'localhost'
 
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind((hostname, self.port))
-        except OSError:
-            error_msg = f"Port {self.port} is already in use on {hostname}. Cannot start minimal OAuth server."
+        # Bind every address family the hostname resolves to, so that an attacker
+        # squatting on ::1 while we bind 127.0.0.1 (or vice versa) cannot receive
+        # the callback on a dual-stack host.
+        sockets, error_msg = self._bind_sockets(hostname)
+        if not sockets:
             logger.error(error_msg)
             return False, error_msg
 
+        startup_error: list[str] = []
+
         def run_server():
-            """Run the server in a separate thread."""
+            """Run the server in a separate thread using the pre-bound sockets."""
             try:
                 config = uvicorn.Config(
                     self.app,
-                    host=hostname,
-                    port=self.port,
                     log_level="warning",
                     access_log=False
                 )
                 self.server = uvicorn.Server(config)
-                asyncio.run(self.server.serve())
+                # serve(sockets=...) adopts the sockets we already hold, so the
+                # port is never released between the bind and the listen.
+                asyncio.run(self.server.serve(sockets=sockets))
 
             except Exception as e:
                 logger.error(f"Minimal OAuth server error: {e}", exc_info=True)
+                startup_error.append(str(e))
                 self.is_running = False
 
-        # Start server in background thread
         self.server_thread = threading.Thread(target=run_server, daemon=True)
         self.server_thread.start()
 
-        # Wait for server to start
-        max_wait = 3.0
-        start_time = time.time()
-        while time.time() - start_time < max_wait:
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    result = s.connect_ex((hostname, self.port))
-                    if result == 0:
-                        self.is_running = True
-                        logger.info(f"Minimal OAuth server started on {hostname}:{self.port}")
-                        return True, ""
-            except Exception:
-                pass
-            time.sleep(0.1)
+        # Readiness must confirm that *our* server is serving, not merely that some
+        # process is listening on the port. uvicorn sets Server.started once its
+        # startup completes.
+        max_wait = 5.0
+        deadline = time.time() + max_wait
+        while time.time() < deadline:
+            if startup_error:
+                msg = (
+                    f"Minimal OAuth server failed to start on {hostname}:{self.port}: "
+                    f"{startup_error[0]}"
+                )
+                logger.error(msg)
+                self._close_sockets(sockets)
+                return False, msg
 
-        error_msg = f"Failed to start minimal OAuth server on {hostname}:{self.port} - server did not respond within {max_wait}s"
+            if self.server is not None and getattr(self.server, "started", False):
+                self.is_running = True
+                logger.info(f"Minimal OAuth server started on {hostname}:{self.port}")
+                return True, ""
+
+            time.sleep(0.05)
+
+        error_msg = (
+            f"Failed to start minimal OAuth server on {hostname}:{self.port} - "
+            f"server did not report readiness within {max_wait}s"
+        )
         logger.error(error_msg)
+        self._close_sockets(sockets)
         return False, error_msg
+
+    def _bind_sockets(self, hostname: str) -> tuple[list, str]:
+        """
+        Bind and listen on every address family ``hostname`` resolves to.
+
+        Returns:
+            Tuple of (sockets, error_message). ``sockets`` is empty on failure.
+        """
+        try:
+            addr_infos = socket.getaddrinfo(
+                hostname, self.port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+            )
+        except socket.gaierror as e:
+            return [], f"Could not resolve {hostname}: {e}"
+
+        # Deduplicate by (family, sockaddr); getaddrinfo often repeats entries.
+        seen = set()
+        sockets = []
+        for family, socktype, proto, _canonname, sockaddr in addr_infos:
+            key = (family, sockaddr)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            sock = socket.socket(family, socktype, proto)
+            try:
+                # Deliberately NOT setting SO_REUSEADDR/SO_REUSEPORT: we want the
+                # bind to fail loudly if anything else already holds this port.
+                if family == socket.AF_INET6:
+                    # Bind v6 only, so the v4 socket below is not shadowed by a
+                    # dual-stack v6 socket (and vice versa).
+                    try:
+                        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                    except (AttributeError, OSError):
+                        pass
+                sock.bind(sockaddr)
+                sock.listen(128)
+                sock.set_inheritable(True)
+            except OSError as e:
+                sock.close()
+                self._close_sockets(sockets)
+                return [], (
+                    f"Port {self.port} is already in use on {hostname} "
+                    f"({sockaddr}): {e}. Cannot start minimal OAuth server. "
+                    f"Another process may be squatting the OAuth callback port."
+                )
+            sockets.append(sock)
+
+        if not sockets:
+            return [], f"No usable address found for {hostname}:{self.port}"
+
+        return sockets, ""
+
+    @staticmethod
+    def _close_sockets(sockets) -> None:
+        for sock in sockets:
+            try:
+                sock.close()
+            except OSError:
+                pass
 
     def stop(self):
         """Stop the minimal OAuth server."""

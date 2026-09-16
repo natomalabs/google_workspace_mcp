@@ -20,10 +20,13 @@ RUN uv sync --frozen --no-dev
 RUN useradd --create-home --shell /bin/bash app \
     && chown -R app:app /app
 
-# Give read and write access to the store_creds volume
+# Give read and write access to the store_creds volume.
+# Mode 0700: the volume holds plaintext OAuth refresh_tokens and the application's
+# confidential client_secret, so it must not be readable by other UIDs or by
+# sidecar containers that mount the same volume.
 RUN mkdir -p /app/store_creds \
     && chown -R app:app /app/store_creds \
-    && chmod 755 /app/store_creds
+    && chmod 700 /app/store_creds
 
 USER app
 

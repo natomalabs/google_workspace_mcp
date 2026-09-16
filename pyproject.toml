@@ -66,6 +66,8 @@ workspace-mcp = "main:main"
 [project.optional-dependencies]
 dev = [
     "twine>=5.0.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
 ]
 
 [tool.setuptools]
@@ -74,3 +76,7 @@ py-modules = [ "main"]
 
 [tool.setuptools.package-data]
 core = ["tool_tiers.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

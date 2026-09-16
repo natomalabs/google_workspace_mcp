@@ -14,7 +14,7 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from auth.credential_store import get_credential_store
+from auth.credential_store import get_credential_store, is_valid_user_email
 from auth.oauth21_session_store import get_oauth21_session_store
 from auth.oauth_config import get_oauth_config, is_stateless_mode
 from auth.scopes import SCOPES, get_current_scopes  # noqa
@@ -1026,8 +1026,12 @@ async def get_authenticated_google_service(
         f"[{tool_name}] Attempting to get authenticated {service_name} service. Email: '{user_google_email}', Session: '{session_id}'"
     )
 
-    # Validate email format
-    if not user_google_email or "@" not in user_google_email:
+    # Validate email format. A bare `"@" in ...` check is not sufficient: this
+    # value is caller-supplied on the /mcp tool surface and flows into
+    # LocalDirectoryCredentialStore's filename construction, so payloads such as
+    # '../../../tmp/oauth@stash' would satisfy it. Reject anything that is not a
+    # plain email address.
+    if not user_google_email or not is_valid_user_email(user_google_email):
         error_msg = f"Authentication required for {tool_name}. No valid 'user_google_email' provided. Please provide a valid Google email address."
         logger.info(f"[{tool_name}] {error_msg}")
         raise GoogleAuthenticationError(error_msg)

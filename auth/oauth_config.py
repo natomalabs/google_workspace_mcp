@@ -10,6 +10,7 @@ Supports both OAuth 2.0 and OAuth 2.1 with automatic client capability detection
 
 import os
 from typing import List, Optional, Dict, Any
+from urllib.parse import urlparse
 
 
 class OAuthConfig:
@@ -46,6 +47,22 @@ class OAuthConfig:
 
         # Transport mode (will be set at runtime)
         self._transport_mode = "stdio"  # Default
+
+        # CORS: whether to additionally allow any http://localhost:* /
+        # http://127.0.0.1:* origin on the OAuth endpoints. This exists for local
+        # IDEs and MCP inspectors and is NOT safe in a publicly reachable
+        # deployment, because /oauth2/register and /oauth2/token return the
+        # confidential client_secret and any page a victim loads on their own
+        # loopback interface would then be able to read it cross-origin.
+        #
+        # Default: allowed only when the server is not configured for external
+        # access (no WORKSPACE_EXTERNAL_URL). Set OAUTH_ALLOW_LOCALHOST_ORIGINS
+        # explicitly to override in either direction.
+        localhost_override = os.getenv("OAUTH_ALLOW_LOCALHOST_ORIGINS")
+        if localhost_override is not None:
+            self.allow_localhost_origins = localhost_override.strip().lower() == "true"
+        else:
+            self.allow_localhost_origins = not bool(self.external_url)
 
         # Redirect URI configuration
         self.redirect_uri = self._get_redirect_uri()
@@ -108,6 +125,65 @@ class OAuthConfig:
 
         return list(dict.fromkeys(origins))
 
+    def is_origin_allowed(self, origin: Optional[str]) -> bool:
+        """
+        Decide whether an Origin may read OAuth endpoint responses.
+
+        This is the single authority for the CORS decision. Previously the live
+        CORS path hard-coded a localhost prefix match and never consulted
+        get_allowed_origins(), so OAUTH_ALLOWED_ORIGINS was dead configuration and
+        an operator had no way to restrict cross-origin reads of the
+        client_secret-bearing /oauth2/register and /oauth2/token responses
+        (SNOW-3697274). It also allowed any localhost origin unconditionally,
+        including in production (SNOW-3687336).
+
+        Args:
+            origin: The request's Origin header value.
+
+        Returns:
+            True if the origin is permitted.
+        """
+        if not origin:
+            return False
+
+        allowed = self.get_allowed_origins()
+
+        # Exact match against the configured allow-list. Origins are compared
+        # verbatim: a prefix or suffix match would let evil-localhost.com or
+        # localhost.evil.com through.
+        if origin in allowed:
+            return True
+
+        # Scheme-only entries such as "vscode-webview://" identify an entire
+        # client family that does not have a host component.
+        for entry in allowed:
+            if entry.endswith("://") and origin.startswith(entry):
+                return True
+
+        # Opt-in loopback allowance for local IDEs and inspectors.
+        if self.allow_localhost_origins and self._is_loopback_origin(origin):
+            return True
+
+        return False
+
+    @staticmethod
+    def _is_loopback_origin(origin: str) -> bool:
+        """
+        True if origin is an http(s) loopback origin.
+
+        Parses the URL rather than using startswith(), so that hostnames merely
+        beginning with 'localhost' (e.g. http://localhost.evil.com) are rejected.
+        """
+        try:
+            parsed = urlparse(origin)
+        except ValueError:
+            return False
+
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        return parsed.hostname in ("localhost", "127.0.0.1", "::1")
+
     def is_configured(self) -> bool:
         """
         Check if OAuth is properly configured.
@@ -162,6 +238,7 @@ class OAuthConfig:
             "transport_mode": self._transport_mode,
             "total_redirect_uris": len(self.get_redirect_uris()),
             "total_allowed_origins": len(self.get_allowed_origins()),
+            "allow_localhost_origins": self.allow_localhost_origins,
         }
 
     def set_transport_mode(self, mode: str) -> None:
