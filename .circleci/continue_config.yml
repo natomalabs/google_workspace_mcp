@@ -1,0 +1,53 @@
+version: 2.1
+
+orbs:
+  gcp-cli: circleci/gcp-cli@3.3.0
+
+parameters:
+  build-workspace-mcp:
+    type: boolean
+    default: false
+
+jobs:
+  build-workspace-mcp-image:
+    executor: gcp-cli/google
+    resource_class: medium
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - gcp-cli/setup
+      - run:
+          name: Install Docker CLI
+          command: |
+            apt-get update
+            apt-get install -y ca-certificates wget gnupg lsb-release
+            wget -O- https://download.docker.com/linux/debian/gpg | gpg --dearmor | tee /usr/share/keyrings/docker.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list
+            apt-get update
+            apt-get install -y docker-ce-cli
+      - run:
+          name: Configure Artifact Registry credential provider
+          command: gcloud auth configure-docker us-docker.pkg.dev
+      - run:
+          name: Generate image tag
+          command: echo "export IMAGE_TAG_SHA=$(git rev-parse --short=8 HEAD)" >> $BASH_ENV
+      - run:
+          name: Build and push docker image
+          command: |
+            docker build . \
+              --tag us-docker.pkg.dev/${GOOGLE_PROJECT_ID}/nms-images/workspace-mcp-server:${IMAGE_TAG_SHA} \
+            docker push us-docker.pkg.dev/${GOOGLE_PROJECT_ID}/nms-images/workspace-mcp-server:${IMAGE_TAG_SHA}
+
+workflows:
+  workspace-mcp:
+    when:
+      equal: [true, << pipeline.parameters.build-workspace-mcp >>]
+    jobs:
+      - build-workspace-mcp-image:
+          context:
+            - gcp-circle
+          # filters:
+          #   branches:
+          #     only:
+          #       - main
