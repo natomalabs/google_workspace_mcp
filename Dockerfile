@@ -5,11 +5,11 @@ WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    curl \
+    curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv for faster dependency management
-RUN pip install --no-cache-dir uv
+RUN pip install --no-cache-dir --upgrade pip==26.2.2 uv==0.13.4
 
 COPY . .
 
